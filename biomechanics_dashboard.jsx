@@ -57,9 +57,10 @@ const KEY_JOINTS = [
   {r:/jrightknee/i,      lbl:"R Knee",           plane:["FE","AR","LB"]},
   {r:/jleftknee/i,       lbl:"L Knee",           plane:["FE","AR","LB"]},
 ];
-const PLANE_LABELS = ["FE","LB","AR"];
-const PLANE_COLORS = [C.teal, C.amber, C.rose];
-const PLANE_NAMES  = ["Flex/Ext (°)","Lat Bend (°)","Axial Rot (°)"];
+// ZXY Euler order from MVNX: index 0 = Z = LB/Abd, index 1 = X = AR/IE, index 2 = Y = FE
+const PLANE_LABELS = ["LB","AR","FE"];
+const PLANE_COLORS = [C.amber, C.rose, C.teal];
+const PLANE_NAMES  = ["Lat Bend / Abd (°)","Axial Rot / IE (°)","Flex/Ext (°)"];
 
 // ── MVNX Parser ───────────────────────────────────────────────────────────────
 function parseMVNX(xmlStr) {
@@ -396,7 +397,7 @@ function Dashboard({ session }) {
   const [skelSpeed,      setSkelSpeed]      = useState(1);
   const [skelLoadsolIdx, setSkelLoadsolIdx] = useState(0);
   const [loadsolPairings,setLoadsolPairings]= useState({});
-  const [jointPanels, setJointPanels] = useState([{jointKey:0, planes:1}]);
+  const [jointPanels, setJointPanels] = useState([{jointKey:0, planes:4}]); // bit2=FE default
 
   // Cycles
   const [cycleJointKey, setCycleJointKey] = useState(0);
@@ -713,9 +714,9 @@ function Dashboard({ session }) {
       const stride = Math.max(1, Math.floor(mvnx.frames.length / 200));
       return mvnx.frames.filter((_,i) => i % stride === 0).map(f => ({
         t: +f.time.toFixed(2),
-        ...(panel.planes & 1 ? {FE: +(f.ja?.[ji*3]   ?? 0).toFixed(2)} : {}),
-        ...(panel.planes & 2 ? {LB: +(f.ja?.[ji*3+1] ?? 0).toFixed(2)} : {}),
-        ...(panel.planes & 4 ? {AR: +(f.ja?.[ji*3+2] ?? 0).toFixed(2)} : {}),
+        ...(panel.planes & 1 ? {LB: +(f.ja?.[ji*3]   ?? 0).toFixed(2)} : {}),  // Z = Lat Bend
+        ...(panel.planes & 2 ? {AR: +(f.ja?.[ji*3+1] ?? 0).toFixed(2)} : {}),  // X = Axial Rot
+        ...(panel.planes & 4 ? {FE: +(f.ja?.[ji*3+2] ?? 0).toFixed(2)} : {}),  // Y = Flex/Ext
       }));
     });
   }, [jointPanels, activeSkelMvnx]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -768,7 +769,7 @@ function Dashboard({ session }) {
               const mvnx = activeJob.mvnxFiles[0];
               const ji = mvnx.jointLabels?.findIndex(l => /jl5s1/i.test(l)) ?? 0;
               const stride = Math.max(1, Math.floor(mvnx.frames.length/150));
-              const d = mvnx.frames.filter((_,i) => i%stride===0).map(f => ({t:+f.time.toFixed(2), fe:+(f.ja?.[ji*3]??0).toFixed(2)}));
+              const d = mvnx.frames.filter((_,i) => i%stride===0).map(f => ({t:+f.time.toFixed(2), fe:+(f.ja?.[ji*3+2]??0).toFixed(2)}));
               return <ChartCard title="L4/L5 Flex/Ext" h={180}><ResponsiveContainer><LineChart data={d}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:9}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/><Tooltip content={Tt}/><Line type="monotone" dataKey="fe" stroke={C.teal} dot={false} strokeWidth={1.5} name="FE"/></LineChart></ResponsiveContainer></ChartCard>;
             })()}
             {hasLS&&(()=>{
@@ -903,9 +904,9 @@ function Dashboard({ session }) {
               // Current angle values for live readout
               const ji = hasData ? mvnx.jointLabels?.findIndex(l => kj.r.test(l)) : -1;
               const curAngles = (ji >= 0 && frame?.ja) ? {
-                FE: frame.ja[ji*3]?.toFixed(1),
-                LB: frame.ja[ji*3+1]?.toFixed(1),
-                AR: frame.ja[ji*3+2]?.toFixed(1),
+                LB: frame.ja[ji*3]?.toFixed(1),    // Z = Lat Bend
+                AR: frame.ja[ji*3+1]?.toFixed(1),  // X = Axial Rot
+                FE: frame.ja[ji*3+2]?.toFixed(1),  // Y = Flex/Ext
               } : null;
               return (
                 <ChartCard key={pi} h={180} title={
