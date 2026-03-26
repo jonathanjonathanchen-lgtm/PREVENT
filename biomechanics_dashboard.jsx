@@ -392,6 +392,7 @@ function Dashboard({ session }) {
   const [skelView,    setSkelView]    = useState("front");
   const [skelFileIdx, setSkelFileIdx] = useState(0);
   const [skelPlaying, setSkelPlaying] = useState(false);
+  const [skelSpeed,   setSkelSpeed]   = useState(1);
   const [jointPanels, setJointPanels] = useState([{jointKey:0, planes:new Set([0])}]);
 
   // Cycles
@@ -661,9 +662,9 @@ function Dashboard({ session }) {
     if (!mvnx?.frames?.length) return;
     const id = setInterval(() => {
       setSkelFrame(f => { const n=f+1; if(n>=mvnx.frames.length){setSkelPlaying(false);return 0;} return n; });
-    }, 1000/(mvnx.frameRate||60));
+    }, 1000/((mvnx.frameRate||60)*skelSpeed));
     return () => clearInterval(id);
-  }, [skelPlaying, activeJob, skelFileIdx]);
+  }, [skelPlaying, activeJob, skelFileIdx, skelSpeed]);
 
   // ── Derived force data ────────────────────────────────────────────────────
   const shiftedForce = useMemo(() => {
@@ -837,10 +838,13 @@ function Dashboard({ session }) {
             </svg>
             {hasData ? (
               <div style={{marginTop:10}}>
-                <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:6}}>
+                <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:6,flexWrap:"wrap"}}>
                   <Btn small onClick={()=>{setSkelFrame(0);setSkelPlaying(false);}}>⏮</Btn>
                   <Btn small active={skelPlaying} onClick={()=>setSkelPlaying(p=>!p)}>{skelPlaying?"⏸":"▶"}</Btn>
                   <Btn small onClick={()=>{setSkelPlaying(false);setSkelFrame(mvnx.frames.length-1);}}>⏭</Btn>
+                  {[0.25,0.5,1,2,4].map(s=>(
+                    <Btn key={s} small active={skelSpeed===s} onClick={()=>setSkelSpeed(s)}>{s}×</Btn>
+                  ))}
                 </div>
                 <input type="range" min={0} max={mvnx.frames.length-1} value={skelFrame}
                   onChange={e=>setSkelFrame(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
@@ -862,8 +866,21 @@ function Dashboard({ session }) {
             {jointPanels.map((panel,pi) => {
               const kj   = KEY_JOINTS[panel.jointKey];
               const data = buildPanelData(panel.jointKey, panel.planes);
+              // Current angle values for live readout
+              const ji = hasData ? mvnx.jointLabels?.findIndex(l => kj.r.test(l)) : -1;
+              const curAngles = (ji >= 0 && frame?.ja) ? {
+                FE: frame.ja[ji*3]?.toFixed(1),
+                LB: frame.ja[ji*3+1]?.toFixed(1),
+                AR: frame.ja[ji*3+2]?.toFixed(1),
+              } : null;
               return (
-                <ChartCard key={pi} h={180} title={kj.lbl}
+                <ChartCard key={pi} h={180} title={
+                  <span>{kj.lbl}{curAngles&&panel.planes.size>0&&(
+                    <span style={{fontSize:10,fontWeight:400,color:C.muted,marginLeft:8}}>
+                      {[...panel.planes].map(pli=>`${PLANE_LABELS[pli]}: ${curAngles[PLANE_LABELS[pli]]}°`).join("  ")}
+                    </span>
+                  )}</span>
+                }
                   action={
                     <div style={{display:"flex",gap:4,alignItems:"center"}}>
                       {PLANE_LABELS.map((pl,pli) => (
@@ -908,18 +925,20 @@ function Dashboard({ session }) {
             </div>
 
             {hasLS&&(()=>{
-              const stride = Math.max(1, Math.floor(lsf.data.length/200));
-              const d = lsf.data.filter((_,i) => i%stride===0);
-              const cursor = lsf.blipTime!=null ? +(lsf.blipTime+ft).toFixed(3) : null;
+              // Clip LoadSOL to blip time so t=0 aligns with XSENS start
+              const clipped = lsf.blipTime != null
+                ? lsf.data.filter(d => d.time >= lsf.blipTime).map(d => ({...d, time: +(d.time - lsf.blipTime).toFixed(3)}))
+                : lsf.data;
+              const stride = Math.max(1, Math.floor(clipped.length/200));
+              const d = clipped.filter((_,i) => i%stride===0);
               return (
-                <ChartCard title="LoadSOL GRF" h={160}>
+                <ChartCard title="LoadSOL GRF (clipped to XSENS start)" h={160}>
                   <ResponsiveContainer><LineChart data={d}>
                     <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                    <XAxis dataKey="time" tick={{fill:C.muted,fontSize:9}} stroke={C.border}/>
+                    <XAxis dataKey="time" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
                     <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/>
                     <Tooltip content={Tt}/>
-                    {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2} label={{value:"⚡",fill:C.amber,fontSize:12,position:"insideTop"}}/>}
-                    {cursor&&<ReferenceLine x={cursor} stroke={C.text} strokeWidth={1.5} strokeDasharray="3 2"/>}
+                    <ReferenceLine x={+ft.toFixed(3)} stroke={C.amber} strokeWidth={2} strokeDasharray="3 2"/>
                     <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={1.5} name="L"/>
                     <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={1.5} name="R"/>
                   </LineChart></ResponsiveContainer>
@@ -928,14 +947,24 @@ function Dashboard({ session }) {
             })()}
 
             {hasF&&(
-              <ChartCard title="Force (aligned)" h={160}>
+              <ChartCard title="Force (aligned to skeleton)" h={200}
+                action={
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <span style={{fontSize:10,color:C.muted}}>offset:</span>
+                    <input type="number" step={0.1} value={forceOffset.toFixed(2)}
+                      onChange={e=>setForceOffset(+e.target.value)}
+                      style={{width:64,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 6px",color:C.accent,fontSize:11,textAlign:"center"}}/>
+                    <span style={{fontSize:10,color:C.muted}}>s</span>
+                    <Btn small onClick={()=>setForceOffset(0)}>0</Btn>
+                  </div>
+                }>
                 <ResponsiveContainer>
                   <ComposedChart>
                     <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                    <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border}/>
+                    <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
                     <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/>
                     <Tooltip content={Tt}/>
-                    <ReferenceLine x={+ft.toFixed(3)} stroke={C.text} strokeWidth={1.5} strokeDasharray="3 2"/>
+                    <ReferenceLine x={+ft.toFixed(3)} stroke={C.amber} strokeWidth={2} strokeDasharray="3 2"/>
                     <Line data={shiftedForce} type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={1.5} name="Force"/>
                     {extendedForce&&<Line data={extendedForce} type="monotone" dataKey="force" stroke={C.emerald} dot={false} strokeWidth={1.5} strokeDasharray="6 2" name="Extended"/>}
                   </ComposedChart>
