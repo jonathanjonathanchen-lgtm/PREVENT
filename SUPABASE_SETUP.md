@@ -56,7 +56,8 @@ create table job_settings (
   force_offset float default 0,
   extend_duration float default 0,
   force_blocks jsonb default '[]',
-  joint_panels jsonb default '[{"jointKey":0,"planes":[0]}]',
+  joint_panels jsonb default '[{"jointKey":0,"planes":1}]',
+  loadsol_pairings jsonb default '{}',
   updated_at timestamptz default now()
 );
 alter table job_settings enable row level security;

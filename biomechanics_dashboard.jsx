@@ -263,9 +263,10 @@ const FileBar = ({job, onUpload, onRemove}) => {
           onX={()=>onRemove("mvnx",i)}/>
       ))}
       <Chip color={C.teal} label="+ MVNX" onAdd={()=>onUpload("mvnx")}/>
-      {job.loadsolFile
-        ? <Chip color={C.sky} label={job.loadsolFile.name} onX={()=>onRemove("loadsol")}/>
-        : <Chip color={C.sky} label="+ LoadSOL" onAdd={()=>onUpload("loadsol")}/>}
+      {(job.loadsolFiles||[]).map((f,i)=>(
+        <Chip key={i} color={C.sky} label={f.name} onX={()=>onRemove("loadsol",i)}/>
+      ))}
+      <Chip color={C.sky} label="+ LoadSOL" onAdd={()=>onUpload("loadsol")}/>
       {job.forceFile
         ? <Chip color={C.violet} label={job.forceFile.name} onX={()=>onRemove("force")}/>
         : <Chip color={C.violet} label="+ Force CSV" onAdd={()=>onUpload("force")}/>}
@@ -388,12 +389,14 @@ function Dashboard({ session }) {
   const [editingJobName, setEditingJobName] = useState("");
 
   // Skeleton
-  const [skelFrame,   setSkelFrame]   = useState(0);
-  const [skelView,    setSkelView]    = useState("front");
-  const [skelFileIdx, setSkelFileIdx] = useState(0);
-  const [skelPlaying, setSkelPlaying] = useState(false);
-  const [skelSpeed,   setSkelSpeed]   = useState(1);
-  const [jointPanels, setJointPanels] = useState([{jointKey:0, planes:new Set([0])}]);
+  const [skelFrame,      setSkelFrame]      = useState(0);
+  const [skelView,       setSkelView]       = useState("front");
+  const [skelFileIdx,    setSkelFileIdx]    = useState(0);
+  const [skelPlaying,    setSkelPlaying]    = useState(false);
+  const [skelSpeed,      setSkelSpeed]      = useState(1);
+  const [skelLoadsolIdx, setSkelLoadsolIdx] = useState(0);
+  const [loadsolPairings,setLoadsolPairings]= useState({});
+  const [jointPanels, setJointPanels] = useState([{jointKey:0, planes:1}]);
 
   // Cycles
   const [cycleJointKey, setCycleJointKey] = useState(0);
@@ -424,7 +427,7 @@ function Dashboard({ session }) {
           ...j,
           createdAt: new Date(j.created_at).toLocaleDateString(),
           mvnxFiles: [],
-          loadsolFile: null,
+          loadsolFiles: [],
           forceFile: null,
           _fileRecords: j.job_files || [],
         })));
@@ -466,10 +469,10 @@ function Dashboard({ session }) {
       };
 
       const mvnxRecs = records.filter(r => r.file_type === "mvnx").sort((a,b) => a.sort_order - b.sort_order);
-      const lsRec    = records.find(r => r.file_type === "loadsol");
+      const lsRecs   = records.filter(r => r.file_type === "loadsol").sort((a,b) => a.sort_order - b.sort_order);
       const fRec     = records.find(r => r.file_type === "force");
 
-      const total = mvnxRecs.length + (lsRec?1:0) + (fRec?1:0);
+      const total = mvnxRecs.length + lsRecs.length + (fRec?1:0);
       let done = 0;
 
       const mvnxFiles = [];
@@ -480,12 +483,12 @@ function Dashboard({ session }) {
         if (p.ok) mvnxFiles.push({ id: rec.id, storagePath: rec.storage_path, name: rec.file_name, ...p });
       }
 
-      let loadsolFile = null;
-      if (lsRec) {
+      const loadsolFiles = [];
+      for (const lsRec of lsRecs) {
         const text = await dl(`${lsRec.file_name} (${++done}/${total})`, lsRec.storage_path);
         if (text) {
           const p = parseLoadSOL(text);
-          if (p.ok) loadsolFile = { id: lsRec.id, storagePath: lsRec.storage_path, name: lsRec.file_name, ...p };
+          if (p.ok) loadsolFiles.push({ id: lsRec.id, storagePath: lsRec.storage_path, name: lsRec.file_name, ...p });
         }
       }
 
@@ -498,7 +501,7 @@ function Dashboard({ session }) {
         }
       }
 
-      setJobs(prev => prev.map(j => j.id === activeJobId ? { ...j, mvnxFiles, loadsolFile, forceFile } : j));
+      setJobs(prev => prev.map(j => j.id === activeJobId ? { ...j, mvnxFiles, loadsolFiles, forceFile } : j));
       setFilesLoading(false);
       setLoadingMsg("");
       await loadSettings(activeJobId);
@@ -512,8 +515,9 @@ function Dashboard({ session }) {
   const loadSettings = async (jobId) => {
     readyToSaveRef.current = false;
     setForceOffset(0); setExtendDuration(0); setForceBlocks([]);
-    setJointPanels([{jointKey:0, planes:new Set([0])}]);
+    setJointPanels([{jointKey:0, planes:1}]);
     setSkelFrame(0); setSkelFileIdx(0); setSkelPlaying(false);
+    setSkelLoadsolIdx(0); setLoadsolPairings({});
 
     const { data } = await supabase
       .from("job_settings")
@@ -526,8 +530,12 @@ function Dashboard({ session }) {
       setExtendDuration(data.extend_duration || 0);
       setForceBlocks(data.force_blocks || []);
       if (data.joint_panels?.length) {
-        setJointPanels(data.joint_panels.map(p => ({ ...p, planes: new Set(p.planes || [0]) })));
+        setJointPanels(data.joint_panels.map(p => ({
+          ...p,
+          planes: typeof p.planes === 'number' ? p.planes : (p.planes || [0]).reduce((m,x) => m|(1<<x), 0),
+        })));
       }
+      if (data.loadsol_pairings) setLoadsolPairings(data.loadsol_pairings);
     }
     // Short delay so the save effect doesn't fire immediately after loading
     setTimeout(() => { readyToSaveRef.current = true; }, 600);
@@ -542,12 +550,13 @@ function Dashboard({ session }) {
         force_offset: forceOffset,
         extend_duration: extendDuration,
         force_blocks: forceBlocks,
-        joint_panels: jointPanels.map(p => ({ ...p, planes: [...p.planes] })),
+        joint_panels: jointPanels,
+        loadsol_pairings: loadsolPairings,
         updated_at: new Date().toISOString(),
       }, { onConflict: "job_id" });
     }, 1500);
     return () => clearTimeout(timer);
-  }, [activeJobId, forceOffset, extendDuration, forceBlocks, jointPanels]);
+  }, [activeJobId, forceOffset, extendDuration, forceBlocks, jointPanels, loadsolPairings]);
 
   // ── Job helpers ───────────────────────────────────────────────────────────
   const createJob = async () => {
@@ -559,7 +568,7 @@ function Dashboard({ session }) {
       .single();
     if (error) { alert("Create job error: " + error.message); return; }
     if (data) {
-      const job = { ...data, createdAt: new Date(data.created_at).toLocaleDateString(), mvnxFiles: [], loadsolFile: null, forceFile: null, _fileRecords: [] };
+      const job = { ...data, createdAt: new Date(data.created_at).toLocaleDateString(), mvnxFiles: [], loadsolFiles: [], forceFile: null, _fileRecords: [] };
       setJobs(prev => [job, ...prev]);
       setActiveJobId(data.id);
       loadedJobsRef.current.add(data.id);
@@ -628,7 +637,7 @@ function Dashboard({ session }) {
         if (j.id !== activeJobId) return j;
         const f = { id: rec.id, storagePath, name: file.name, ...parsed };
         if (uploadType === "mvnx")    return { ...j, mvnxFiles: [...j.mvnxFiles, f], _fileRecords: [...j._fileRecords, rec] };
-        if (uploadType === "loadsol") return { ...j, loadsolFile: f, _fileRecords: [...j._fileRecords, rec] };
+        if (uploadType === "loadsol") return { ...j, loadsolFiles: [...(j.loadsolFiles||[]), f], _fileRecords: [...j._fileRecords, rec] };
         return { ...j, forceFile: f, _fileRecords: [...j._fileRecords, rec] };
       }));
     }
@@ -640,7 +649,7 @@ function Dashboard({ session }) {
     if (!job) return;
     let fileObj;
     if (type === "mvnx")    fileObj = job.mvnxFiles[idx];
-    if (type === "loadsol") fileObj = job.loadsolFile;
+    if (type === "loadsol") fileObj = job.loadsolFiles[idx];
     if (type === "force")   fileObj = job.forceFile;
     if (!fileObj) return;
 
@@ -650,7 +659,7 @@ function Dashboard({ session }) {
     setJobs(prev => prev.map(j => {
       if (j.id !== activeJobId) return j;
       if (type === "mvnx")    return { ...j, mvnxFiles: j.mvnxFiles.filter((_,i) => i !== idx) };
-      if (type === "loadsol") return { ...j, loadsolFile: null };
+      if (type === "loadsol") return { ...j, loadsolFiles: j.loadsolFiles.filter((_,i) => i !== idx) };
       return { ...j, forceFile: null };
     }));
   }, [activeJobId, jobs]);
@@ -696,7 +705,7 @@ function Dashboard({ session }) {
   // ════════════════════════════════════════════════════════════════════════════
   const renderOverview = () => {
     const hasMvnx = !!activeJob?.mvnxFiles?.length;
-    const hasLS   = !!activeJob?.loadsolFile;
+    const hasLS   = !!activeJob?.loadsolFiles?.length;
     const hasF    = !!activeJob?.forceFile;
     const sc = (ok,label,detail) => (
       <div style={{background:ok?C.accent+"12":C.card,border:`1px solid ${ok?C.accent+"50":C.border}`,borderRadius:8,padding:"10px 14px"}}>
@@ -716,16 +725,16 @@ function Dashboard({ session }) {
       <div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:8,marginBottom:18}}>
           {sc(hasMvnx,"MVNX",hasMvnx?`${activeJob.mvnxFiles.length} cycle(s)`:"Upload .mvnx")}
-          {sc(hasLS,"LoadSOL",hasLS?activeJob.loadsolFile.name:"Upload TXT")}
+          {sc(hasLS,"LoadSOL",hasLS?`${activeJob.loadsolFiles.length} file(s)`:"Upload TXT")}
           {sc(hasF,"Force",hasF?activeJob.forceFile.name:"Upload CSV")}
         </div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:18}}>
           <Stat label="MVNX Cycles"    value={activeJob?.mvnxFiles?.length||"—"} unit="files"/>
           <Stat label="Trial Duration" value={activeJob?.mvnxFiles?.[0]?.duration?.toFixed(1)||"—"} unit="s"/>
-          <Stat label="GRF Peak (R)"   value={activeJob?.loadsolFile?.stats?.rightMax?.toFixed(0)||"—"} unit="N"/>
+          <Stat label="GRF Peak (R)"   value={activeJob?.loadsolFiles?.[0]?.stats?.rightMax?.toFixed(0)||"—"} unit="N"/>
           <Stat label="Force Peak"     value={activeJob?.forceFile?.stats?.peak?.toFixed(1)||"—"} unit="N"/>
-          <Stat label="XSENS Blip"     value={activeJob?.loadsolFile?.blipTime?.toFixed(3)||"—"} unit="s"
-            sub="sync marker" color={activeJob?.loadsolFile?.blipTime?C.amber:undefined}/>
+          <Stat label="XSENS Blip"     value={activeJob?.loadsolFiles?.[0]?.blipTime?.toFixed(3)||"—"} unit="s"
+            sub="sync marker" color={activeJob?.loadsolFiles?.[0]?.blipTime?C.amber:undefined}/>
         </div>
         {!activeJobId ? (
           <EmptyState icon="🗂" title="No job selected" detail="Create or select a job to get started."
@@ -743,7 +752,7 @@ function Dashboard({ session }) {
               return <ChartCard title="L4/L5 Flex/Ext" h={180}><ResponsiveContainer><LineChart data={d}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:9}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/><Tooltip content={Tt}/><Line type="monotone" dataKey="fe" stroke={C.teal} dot={false} strokeWidth={1.5} name="FE"/></LineChart></ResponsiveContainer></ChartCard>;
             })()}
             {hasLS&&(()=>{
-              const lsf = activeJob.loadsolFile;
+              const lsf = activeJob.loadsolFiles[0];
               const stride = Math.max(1, Math.floor(lsf.data.length/150));
               const d = lsf.data.filter((_,i) => i%stride===0);
               return <ChartCard title="LoadSOL GRF" h={180}><ResponsiveContainer><LineChart data={d}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="time" tick={{fill:C.muted,fontSize:9}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/><Tooltip content={Tt}/>{lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2}/>}<Line type="monotone" dataKey="left" stroke={C.sky} dot={false} strokeWidth={1.5} name="Left"/><Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={1.5} name="Right"/></LineChart></ResponsiveContainer></ChartCard>;
@@ -777,13 +786,15 @@ function Dashboard({ session }) {
       const stride = Math.max(1, Math.floor(mvnx.frames.length/200));
       return mvnx.frames.filter((_,i) => i%stride===0).map(f => ({
         t: +f.time.toFixed(2),
-        ...(planeSet.has(0) ? {FE: +(f.ja?.[ji*3]??0).toFixed(2)} : {}),
-        ...(planeSet.has(1) ? {LB: +(f.ja?.[ji*3+1]??0).toFixed(2)} : {}),
-        ...(planeSet.has(2) ? {AR: +(f.ja?.[ji*3+2]??0).toFixed(2)} : {}),
+        ...(planeSet & 1 ? {FE: +(f.ja?.[ji*3]??0).toFixed(2)} : {}),
+        ...(planeSet & 2 ? {LB: +(f.ja?.[ji*3+1]??0).toFixed(2)} : {}),
+        ...(planeSet & 4 ? {AR: +(f.ja?.[ji*3+2]??0).toFixed(2)} : {}),
       }));
     };
 
-    const lsf  = activeJob?.loadsolFile;
+    const loadsolFilesList = activeJob?.loadsolFiles || [];
+    const lsfIdx = loadsolPairings[skelFileIdx] ?? skelLoadsolIdx;
+    const lsf = loadsolFilesList[lsfIdx] || loadsolFilesList[0] || null;
     const hasLS = !!lsf?.data?.length;
     const ff   = activeJob?.forceFile;
     const hasF = !!ff?.data?.length;
@@ -798,11 +809,28 @@ function Dashboard({ session }) {
       <div>
         {activeJob && <FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
         {mvnxFiles.length > 0 && (
-          <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+          <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}>
             <span style={{fontSize:12,color:C.muted}}>Cycle:</span>
             {mvnxFiles.map((f,i) => (
-              <Btn key={i} active={skelFileIdx===i} onClick={()=>{setSkelFileIdx(i);setSkelFrame(0);setSkelPlaying(false);}}>
+              <Btn key={i} active={skelFileIdx===i} onClick={()=>{
+                setSkelFileIdx(i); setSkelFrame(0); setSkelPlaying(false);
+                const paired = loadsolPairings[i];
+                if (paired !== undefined) setSkelLoadsolIdx(paired);
+              }}>
                 {f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}
+              </Btn>
+            ))}
+          </div>
+        )}
+        {loadsolFilesList.length > 1 && (
+          <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{fontSize:12,color:C.muted}}>LoadSOL:</span>
+            {loadsolFilesList.map((f,i) => (
+              <Btn key={i} active={(loadsolPairings[skelFileIdx]??skelLoadsolIdx)===i} small onClick={()=>{
+                setSkelLoadsolIdx(i);
+                setLoadsolPairings(prev=>({...prev,[skelFileIdx]:i}));
+              }}>
+                {f.name.replace(/\.txt$/i,"")}
               </Btn>
             ))}
           </div>
@@ -875,22 +903,19 @@ function Dashboard({ session }) {
               } : null;
               return (
                 <ChartCard key={pi} h={180} title={
-                  <span>{kj.lbl}{curAngles&&panel.planes.size>0&&(
+                  <span>{kj.lbl}{curAngles&&panel.planes>0&&(
                     <span style={{fontSize:10,fontWeight:400,color:C.muted,marginLeft:8}}>
-                      {[...panel.planes].map(pli=>`${PLANE_LABELS[pli]}: ${curAngles[PLANE_LABELS[pli]]}°`).join("  ")}
+                      {[0,1,2].filter(pli=>panel.planes&(1<<pli)).map(pli=>`${PLANE_LABELS[pli]}: ${curAngles[PLANE_LABELS[pli]]}°`).join("  ")}
                     </span>
                   )}</span>
                 }
                   action={
                     <div style={{display:"flex",gap:4,alignItems:"center"}}>
                       {PLANE_LABELS.map((pl,pli) => (
-                        <Btn key={pl} small active={panel.planes.has(pli)}
-                          onClick={()=>setJointPanels(prev=>prev.map((p,i)=>{
-                            if (i!==pi) return p;
-                            const next=new Set(p.planes);
-                            next.has(pli)?next.delete(pli):next.add(pli);
-                            return {...p, planes:next};
-                          }))}>
+                        <Btn key={pl} small active={!!(panel.planes & (1<<pli))}
+                          onClick={()=>setJointPanels(prev=>prev.map((p,i)=>
+                            i!==pi ? p : {...p, planes: p.planes ^ (1<<pli)}
+                          ))}>
                           {pl}
                         </Btn>
                       ))}
@@ -911,18 +936,18 @@ function Dashboard({ session }) {
                       <Tooltip content={Tt}/>
                       <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
                       <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
-                      {PLANE_LABELS.map((pl,pli)=>panel.planes.has(pli)&&(
+                      {PLANE_LABELS.map((pl,pli)=>!!(panel.planes & (1<<pli))&&(
                         <Line key={pl} type="monotone" dataKey={pl} stroke={PLANE_COLORS[pli]}
                           dot={false} strokeWidth={1.5} name={PLANE_NAMES[pli]}/>
                       ))}
-                      {data.length>0&&panel.planes.size>1&&<Legend wrapperStyle={{fontSize:10}}/>}
+                      {data.length>0&&(panel.planes&(panel.planes-1))!==0&&<Legend wrapperStyle={{fontSize:10}}/>}
                     </LineChart>
                   </ResponsiveContainer>
                 </ChartCard>
               );
             })}
             <div style={{marginBottom:12}}>
-              <Btn small onClick={()=>setJointPanels(prev=>[...prev,{jointKey:0,planes:new Set([0])}])}>+ Add Joint Panel</Btn>
+              <Btn small onClick={()=>setJointPanels(prev=>[...prev,{jointKey:0,planes:1}])}>+ Add Joint Panel</Btn>
             </div>
 
             {hasLS&&(()=>{
@@ -1093,58 +1118,60 @@ function Dashboard({ session }) {
   //  TAB 3 — LOADSOL
   // ════════════════════════════════════════════════════════════════════════════
   const renderLoadSOL = () => {
-    const lsf = activeJob?.loadsolFile;
+    const loadsolFiles = activeJob?.loadsolFiles || [];
     if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
+    const renderOne = (lsf, label) => {
+      const stride = Math.max(1, Math.floor(lsf.data.length/300));
+      const d = lsf.data.filter((_,i) => i%stride===0);
+      return (
+        <div key={lsf.id} style={{marginBottom:24}}>
+          {label&&<div style={{fontSize:13,fontWeight:600,color:C.accent,marginBottom:10}}>{label}</div>}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:14}}>
+            <Stat label="Left Peak"  value={lsf.stats.leftMax.toFixed(0)}  unit="N"/>
+            <Stat label="Right Peak" value={lsf.stats.rightMax.toFixed(0)} unit="N"/>
+            <Stat label="XSENS Blip" value={lsf.blipTime?.toFixed(3)||"—"} unit="s"
+              color={lsf.blipTime?C.amber:undefined} sub={lsf.blipTime?"trigger detected":"not detected"}/>
+            <Stat label="Duration" value={(lsf.data[lsf.data.length-1]?.time||0).toFixed(1)} unit="s"/>
+          </div>
+          {lsf.blipTime&&(
+            <div style={{background:C.amber+"15",border:`1px solid ${C.amber}50`,borderLeft:`4px solid ${C.amber}`,borderRadius:8,padding:"10px 16px",fontSize:12,color:C.amber,marginBottom:14,display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{fontSize:16}}>⚡</span>
+              <span><b>XSENS sync blip at t = {lsf.blipTime.toFixed(3)}s</b> — area1 trigger channel spike detected.</span>
+            </div>
+          )}
+          <ChartCard title="Ground Reaction Forces — Left & Right" h={260}>
+            <ResponsiveContainer><LineChart data={d}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+              <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
+              <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
+              <Tooltip content={Tt}/><Legend wrapperStyle={{fontSize:11}}/>
+              {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2.5} label={{value:"⚡ XSENS Start",fill:C.amber,fontSize:11,position:"insideTopRight"}}/>}
+              <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={2} name="Left Foot"/>
+              <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={2} name="Right Foot"/>
+            </LineChart></ResponsiveContainer>
+          </ChartCard>
+          {lsf.data.some(d=>d.trig>0)&&(
+            <ChartCard title="Sync Trigger Channel (area1)" h={140}>
+              <ResponsiveContainer><AreaChart data={d}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
+                <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
+                <Tooltip content={Tt}/>
+                {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2}/>}
+                <Area type="monotone" dataKey="trig" stroke={C.amber} fill={C.amber+"30"} strokeWidth={2} name="Trigger" dot={false}/>
+              </AreaChart></ResponsiveContainer>
+            </ChartCard>
+          )}
+        </div>
+      );
+    };
     return (
       <div>
         {activeJob&&<FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
-        {!lsf ? (
+        {!loadsolFiles.length ? (
           <EmptyState icon="👟" title="No LoadSOL data" detail="Upload LoadSOL TXT. The area1 trigger channel will auto-detect the XSENS sync blip."
             action={activeJobId&&<Btn active onClick={()=>openUpload("loadsol")}>Upload LoadSOL TXT</Btn>}/>
-        ) : (()=>{
-          const stride = Math.max(1, Math.floor(lsf.data.length/300));
-          const d = lsf.data.filter((_,i) => i%stride===0);
-          return (
-            <>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:18}}>
-                <Stat label="Left Peak"  value={lsf.stats.leftMax.toFixed(0)}  unit="N"/>
-                <Stat label="Right Peak" value={lsf.stats.rightMax.toFixed(0)} unit="N"/>
-                <Stat label="XSENS Blip" value={lsf.blipTime?.toFixed(3)||"—"} unit="s"
-                  color={lsf.blipTime?C.amber:undefined} sub={lsf.blipTime?"trigger detected":"not detected"}/>
-                <Stat label="Duration" value={(lsf.data[lsf.data.length-1]?.time||0).toFixed(1)} unit="s"/>
-              </div>
-              {lsf.blipTime&&(
-                <div style={{background:C.amber+"15",border:`1px solid ${C.amber}50`,borderLeft:`4px solid ${C.amber}`,borderRadius:8,padding:"10px 16px",fontSize:12,color:C.amber,marginBottom:14,display:"flex",gap:8,alignItems:"center"}}>
-                  <span style={{fontSize:16}}>⚡</span>
-                  <span><b>XSENS sync blip at t = {lsf.blipTime.toFixed(3)}s</b> — area1 trigger channel spike detected.</span>
-                </div>
-              )}
-              <ChartCard title="Ground Reaction Forces — Left & Right" h={280}>
-                <ResponsiveContainer><LineChart data={d}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                  <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
-                  <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
-                  <Tooltip content={Tt}/><Legend wrapperStyle={{fontSize:11}}/>
-                  {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2.5} label={{value:"⚡ XSENS Start",fill:C.amber,fontSize:11,position:"insideTopRight"}}/>}
-                  <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={2} name="Left Foot"/>
-                  <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={2} name="Right Foot"/>
-                </LineChart></ResponsiveContainer>
-              </ChartCard>
-              {lsf.data.some(d=>d.trig>0)&&(
-                <ChartCard title="Sync Trigger Channel (area1)" h={160}>
-                  <ResponsiveContainer><AreaChart data={d}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                    <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
-                    <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
-                    <Tooltip content={Tt}/>
-                    {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2}/>}
-                    <Area type="monotone" dataKey="trig" stroke={C.amber} fill={C.amber+"30"} strokeWidth={2} name="Trigger" dot={false}/>
-                  </AreaChart></ResponsiveContainer>
-                </ChartCard>
-              )}
-            </>
-          );
-        })()}
+        ) : loadsolFiles.map((lsf,i) => renderOne(lsf, loadsolFiles.length>1 ? lsf.name : null))}
       </div>
     );
   };
@@ -1154,7 +1181,7 @@ function Dashboard({ session }) {
   // ════════════════════════════════════════════════════════════════════════════
   const renderForces = () => {
     const ff  = activeJob?.forceFile;
-    const lsf = activeJob?.loadsolFile;
+    const lsf = activeJob?.loadsolFiles?.[0];
     if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
     return (
       <div>
@@ -1385,7 +1412,7 @@ function Dashboard({ session }) {
   const renderUploadModal = () => {
     const info = {
       mvnx:   {icon:"🦴",title:"Upload MVNX Files",  detail:"One .mvnx file per cycle trial",                   accept:".mvnx",    multi:true},
-      loadsol:{icon:"👟",title:"Upload LoadSOL TXT", detail:"Tab-separated TXT export from LoadSOL",             accept:".txt",     multi:false},
+      loadsol:{icon:"👟",title:"Upload LoadSOL TXT", detail:"Tab-separated TXT export from LoadSOL (one per cycle)",accept:".txt",    multi:true},
       force:  {icon:"📈",title:"Upload Force CSV",   detail:"Time (col 1), Force (col 2). WiDACS CSV works directly.", accept:".csv,.txt",multi:false},
     }[uploadType];
     return (
