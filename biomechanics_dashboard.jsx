@@ -21,7 +21,7 @@ const C = {
   text:"#e2e8f0", muted:"#94a3b8", accent:"#2dd4bf", red:"#dc2626"
 };
 const CYCLE_COLORS = [C.teal, C.amber, C.rose, C.sky, C.violet, C.emerald, C.orange, C.pink];
-const TABS = ["Overview","Skeleton","Cycles","LoadSOL","Forces","Jobs","Pipeline"];
+const TABS = ["Overview","Skeleton","Cycles","LoadSOL","Forces","Dynamics","Jobs","Pipeline"];
 
 // ── Skeleton bone fallback (Z-up XSENS: x=forward, y=left, z=up) ─────────────
 const BONES = [
@@ -86,7 +86,10 @@ function parseMVNX(xmlStr) {
       if (f.getAttribute("type") !== "normal") return;
       const ms = parseInt(f.getAttribute("time") || "0");
       const parse = sel => { const t = f.querySelector(sel)?.textContent?.trim()||""; return t ? t.split(/\s+/).map(Number) : []; };
-      frames.push({ time: ms/1000, pos: parse("position"), ja: parse("jointAngle") });
+      frames.push({ time: ms/1000, pos: parse("position"), ja: parse("jointAngle"),
+        acc:    parse("acceleration"),
+        angVel: parse("angularVelocity"),
+        angAcc: parse("angularAcceleration") });
     });
     const duration = frames.length ? frames[frames.length-1].time : 0;
     return { ok:true, frameRate, segLabels, segIndex, jointLabels, bones, frames, duration };
@@ -151,6 +154,180 @@ function parseForceFile(text) {
       : 0;
     return { ok:true, data, stats:{ peak, peakTime, impulse: impulse.toFixed(2) } };
   } catch(e) { return { ok:false, error:e.message }; }
+}
+
+// ── Vector utilities (global frame, Z-up) ────────────────────────────────────
+const vadd   = (a,b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
+const vsub   = (a,b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+const vscale = (v,s) => [v[0]*s, v[1]*s, v[2]*s];
+const vneg   = a     => [-a[0],-a[1],-a[2]];
+const vcross = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const vmag   = v     => Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+const vnorm  = v     => { const m=vmag(v)||1; return vscale(v,1/m); };
+const vget   = (arr,i) => (arr?.length > i*3+2) ? [arr[i*3],arr[i*3+1],arr[i*3+2]] : [0,0,0];
+
+// ── Winter (2009) segment parameters: [massFrac, comFracFromProx, kGyr] ──────
+// Trunk mass distributed across XSENS spine segments
+const WINTER = {
+  Pelvis:[0.142,0.60,0.31], L5:[0.036,0.50,0.30], L3:[0.036,0.50,0.30],
+  T12:[0.050,0.50,0.30],    T8:[0.085,0.50,0.30],  Neck:[0.012,0.50,0.30],
+  Head:[0.081,0.58,0.495],
+  RightShoulder:[0.009,0.50,0.30],  LeftShoulder:[0.009,0.50,0.30],
+  RightUpperArm:[0.028,0.436,0.322],LeftUpperArm:[0.028,0.436,0.322],
+  RightForearm: [0.016,0.430,0.303],LeftForearm: [0.016,0.430,0.303],
+  RightHand:    [0.006,0.506,0.297],LeftHand:    [0.006,0.506,0.297],
+  RightUpperLeg:[0.100,0.433,0.323],LeftUpperLeg:[0.100,0.433,0.323],
+  RightLowerLeg:[0.046,0.433,0.302],LeftLowerLeg:[0.046,0.433,0.302],
+  RightFoot:    [0.014,0.500,0.475],LeftFoot:    [0.014,0.500,0.475],
+  RightToe:     [0.002,0.500,0.300],LeftToe:     [0.002,0.500,0.300],
+};
+// Each segment's geometrical distal reference (for CoM & length)
+const SEG_DISTAL = {
+  Pelvis:'L5', L5:'L3', L3:'T12', T12:'T8', T8:'Neck', Neck:'Head',
+  RightShoulder:'RightUpperArm', RightUpperArm:'RightForearm', RightForearm:'RightHand',
+  LeftShoulder:'LeftUpperArm',   LeftUpperArm:'LeftForearm',   LeftForearm:'LeftHand',
+  RightUpperLeg:'RightLowerLeg', RightLowerLeg:'RightFoot', RightFoot:'RightToe',
+  LeftUpperLeg:'LeftLowerLeg',   LeftLowerLeg:'LeftFoot',   LeftFoot:'LeftToe',
+};
+
+// ── Inverse Dynamics Engine (Newton-Euler, bottom-up) ────────────────────────
+function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDirKey) {
+  if (!mvnx?.frames?.length || !(bodyMass > 0)) return [];
+  const G  = [0, 0, -9.81];
+  const si = mvnx.segIndex || {};
+
+  // Mean segment lengths from first 10 frames
+  const segLen = {};
+  const refFrames = mvnx.frames.slice(0, Math.min(10, mvnx.frames.length)).filter(f => f.pos?.length);
+  Object.entries(SEG_DISTAL).forEach(([seg, dSeg]) => {
+    const pi = si[seg], di = si[dSeg];
+    if (pi == null || di == null) return;
+    const lens = refFrames.map(f => vmag(vsub(vget(f.pos,di), vget(f.pos,pi))));
+    segLen[seg] = lens.reduce((a,b)=>a+b,0) / (lens.length||1) || 0.1;
+  });
+
+  // Solve one segment — returns proximal joint {F, M, r_prox}
+  const solve = (label, F_dist, M_dist, r_dist_force, frame) => {
+    const idx = si[label];
+    if (idx == null) return { F:[0,0,0], M:[0,0,0], r_prox:[0,0,0] };
+    const [mf, cf, kg] = WINTER[label] || [0.001,0.5,0.3];
+    const m  = mf * bodyMass;
+    const L  = segLen[label] || 0.1;
+    const I  = m * Math.pow(kg * L, 2);
+    const r_prox     = vget(frame.pos, idx);
+    const dLabel     = SEG_DISTAL[label];
+    const r_dist_geo = dLabel && si[dLabel] != null ? vget(frame.pos, si[dLabel]) : vadd(r_prox,[0,0,0.1]);
+    const r_com      = vadd(r_prox, vscale(vsub(r_dist_geo, r_prox), cf));
+    const a_com      = vget(frame.acc,    idx);
+    const alpha      = vget(frame.angAcc, idx);
+    // F equation: F_prox = m*(a-G) - F_dist
+    const F_prox = vsub(vscale(vsub(a_com, G), m), F_dist);
+    // M equation: M_prox = I*α - M_dist - (r_prox-r_com)×F_prox - (r_dist_force-r_com)×F_dist
+    const ang_mom = vscale(alpha, I);
+    const M_prox  = vsub(vsub(vsub(ang_mom, M_dist),
+      vcross(vsub(r_prox,      r_com), F_prox)),
+      vcross(vsub(r_dist_force,r_com), F_dist));
+    return { F: F_prox, M: M_prox, r_prox };
+  };
+
+  // Linear interpolation helper
+  const interp = (data, t, tKey, vKey) => {
+    if (!data?.length) return 0;
+    const i = data.findIndex(d => d[tKey] >= t);
+    if (i <= 0) return data[0]?.[vKey] ?? 0;
+    if (i >= data.length) return data[data.length-1]?.[vKey] ?? 0;
+    const d0=data[i-1], d1=data[i], frac=(t-d0[tKey])/(d1[tKey]-d0[tKey]||1);
+    return d0[vKey] + frac*(d1[vKey]-d0[vKey]);
+  };
+  const interpGRF = (t) => ({
+    right: Math.max(0, interp(lsfData, t, 'time', 'right')),
+    left:  Math.max(0, interp(lsfData, t, 'time', 'left')),
+  });
+  const interpF = (t) => Math.max(0, interp(forceData, t - forceOffset, 'time', 'force'));
+
+  const stride = Math.max(1, Math.floor(mvnx.frames.length / 200));
+  const results = [];
+
+  mvnx.frames.forEach((frame, fi) => {
+    if (fi % stride !== 0 || !frame.pos?.length) return;
+    const t   = frame.time;
+    const grf = interpGRF(t);
+    const wF  = interpF(t);
+
+    // ── Legs (bottom-up) ──
+    const leg = (side) => {
+      const UL=`${side}UpperLeg`, LL=`${side}LowerLeg`, FT=`${side}Foot`, TOE=`${side}Toe`;
+      const grfVal = side==='Right' ? grf.right : grf.left;
+      const r_toe  = vget(frame.pos, si[TOE] ?? si[FT]);
+      const foot   = solve(FT,  [0,0,grfVal], [0,0,0],   r_toe,        frame);
+      const shank  = solve(LL,  vneg(foot.F), vneg(foot.M), foot.r_prox, frame);
+      const thigh  = solve(UL,  vneg(shank.F),vneg(shank.M),shank.r_prox,frame);
+      return { foot, shank, thigh };
+    };
+    const R = leg('Right'), L = leg('Left');
+
+    // ── Pelvis (dual hip inputs) ──
+    const r_pelvis = vget(frame.pos, si['Pelvis']);
+    const r_L5S1   = si['L5'] != null ? vget(frame.pos, si['L5']) : vadd(r_pelvis,[0,0,0.1]);
+    const [mfP,cfP,kgP] = WINTER['Pelvis'];
+    const m_p  = mfP * bodyMass;
+    const I_p  = m_p * Math.pow(kgP*(segLen['Pelvis']||0.15), 2);
+    const r_com_p = vadd(r_pelvis, vscale(vsub(r_L5S1, r_pelvis), cfP));
+    const a_p  = vget(frame.acc, si['Pelvis']);
+    const al_p = vget(frame.angAcc, si['Pelvis']);
+    // Both hip forces act ON pelvis (Newton 3rd of thigh proximal)
+    const F_hR  = vneg(R.thigh.F), M_hR = vneg(R.thigh.M);
+    const F_hL  = vneg(L.thigh.F), M_hL = vneg(L.thigh.M);
+    const r_hR  = vget(frame.pos, si['RightUpperLeg']);
+    const r_hL  = vget(frame.pos, si['LeftUpperLeg']);
+    // F_L5S1 = m*(a-G) - F_hR - F_hL
+    const F_L5S1 = vsub(vsub(vscale(vsub(a_p,G),m_p), F_hR), F_hL);
+    const ang_p  = vscale(al_p, I_p);
+    const tau_p  = vadd(vadd(
+      vcross(vsub(r_L5S1,r_com_p), F_L5S1),
+      vcross(vsub(r_hR,  r_com_p), F_hR)),
+      vadd(vcross(vsub(r_hL,r_com_p), F_hL), vadd(M_hR, M_hL)));
+    const M_L5S1 = vsub(ang_p, tau_p);
+
+    // ── Spine (upward from L5S1) ──
+    const sp_L5  = solve('L5',  vneg(F_L5S1), vneg(M_L5S1), r_L5S1,      frame);
+    const sp_L3  = solve('L3',  vneg(sp_L5.F),vneg(sp_L5.M),sp_L5.r_prox,frame);
+    const sp_T12 = solve('T12', vneg(sp_L3.F),vneg(sp_L3.M),sp_L3.r_prox,frame);
+
+    // ── Right arm top-down (WiDACS) ──
+    let arm = null;
+    if (forceData?.length && si['RightHand'] != null) {
+      const r_wrist  = vget(frame.pos, si['RightHand']);
+      const r_elbow  = vget(frame.pos, si['RightForearm'] ?? si['RightUpperArm']);
+      const handDir  = vnorm(vsub(r_wrist, r_elbow));
+      const r_app    = vadd(r_wrist, vscale(handDir, 0.10));
+      const dirs     = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
+      const fDir     = dirs[forceDirKey] || handDir;
+      const F_app    = vscale(fDir, wF);
+      const h = solve('RightHand',    F_app,         [0,0,0],     r_app,       frame);
+      const f = solve('RightForearm', vneg(h.F),     vneg(h.M),   h.r_prox,    frame);
+      const u = solve('RightUpperArm',vneg(f.F),     vneg(f.M),   f.r_prox,    frame);
+      arm = { wrist:h.M, elbow:f.M, shoulder:u.M };
+    }
+
+    // Convert 3D global moment → FE/LB/AR
+    // Z-up global: X≈forward, Y≈left/right, Z=up
+    // FE ≈ rot about Y-axis (M[1]), LB ≈ rot about X-axis (M[0]), AR ≈ rot about Z-axis (M[2])
+    const fmt = M => ({ FE:+M[1].toFixed(1), LB:+M[0].toFixed(1), AR:+M[2].toFixed(1) });
+
+    results.push({
+      t:       +t.toFixed(3),
+      ankleR:  fmt(R.foot.M),   ankleL: fmt(L.foot.M),
+      kneeR:   fmt(R.shank.M),  kneeL:  fmt(L.shank.M),
+      hipR:    fmt(R.thigh.M),  hipL:   fmt(L.thigh.M),
+      L5S1:    fmt(M_L5S1),
+      L4L3:    fmt(sp_L5.M),
+      L1T12:   fmt(sp_L3.M),
+      T9T8:    fmt(sp_T12.M),
+      ...(arm ? { wristR:fmt(arm.wrist), elbowR:fmt(arm.elbow), shoulderR:fmt(arm.shoulder) } : {}),
+    });
+  });
+  return results;
 }
 
 // ── Skeleton projection (XSENS Z-up) ─────────────────────────────────────────
@@ -402,6 +579,10 @@ function Dashboard({ session }) {
   // Cycles
   const [cycleJointKey, setCycleJointKey] = useState(0);
 
+  // Dynamics
+  const [bodyMass,    setBodyMass]    = useState(75);
+  const [forceDirKey, setForceDirKey] = useState('hand');
+
   // Forces / settings
   const [forceOffset,    setForceOffset]    = useState(0);
   const [extendDuration, setExtendDuration] = useState(0);
@@ -516,9 +697,10 @@ function Dashboard({ session }) {
   const loadSettings = async (jobId) => {
     readyToSaveRef.current = false;
     setForceOffset(0); setExtendDuration(0); setForceBlocks([]);
-    setJointPanels([{jointKey:0, planes:1}]);
+    setJointPanels([{jointKey:0, planes:4}]);
     setSkelFrame(0); setSkelFileIdx(0); setSkelPlaying(false);
     setSkelLoadsolIdx(0); setLoadsolPairings({});
+    setBodyMass(75); setForceDirKey('hand');
 
     const { data } = await supabase
       .from("job_settings")
@@ -537,6 +719,8 @@ function Dashboard({ session }) {
         })));
       }
       if (data.loadsol_pairings) setLoadsolPairings(data.loadsol_pairings);
+      if (data.body_mass > 0)   setBodyMass(data.body_mass);
+      if (data.force_dir_key)   setForceDirKey(data.force_dir_key);
     }
     // Short delay so the save effect doesn't fire immediately after loading
     setTimeout(() => { readyToSaveRef.current = true; }, 600);
@@ -553,11 +737,13 @@ function Dashboard({ session }) {
         force_blocks: forceBlocks,
         joint_panels: jointPanels,
         loadsol_pairings: loadsolPairings,
+        body_mass: bodyMass,
+        force_dir_key: forceDirKey,
         updated_at: new Date().toISOString(),
       }, { onConflict: "job_id" });
     }, 1500);
     return () => clearTimeout(timer);
-  }, [activeJobId, forceOffset, extendDuration, forceBlocks, jointPanels, loadsolPairings]);
+  }, [activeJobId, forceOffset, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceDirKey]);
 
   // ── Job helpers ───────────────────────────────────────────────────────────
   const createJob = async () => {
@@ -720,6 +906,24 @@ function Dashboard({ session }) {
       }));
     });
   }, [jointPanels, activeSkelMvnx]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Active LoadSOL (paired with current MVNX cycle)
+  const lsfIdx = loadsolPairings[skelFileIdx] ?? skelLoadsolIdx;
+  const activeLsf = activeJob?.loadsolFiles?.[lsfIdx] || activeJob?.loadsolFiles?.[0] || null;
+
+  // Clipped LoadSOL data aligned to XSENS t=0
+  const clippedLsf = useMemo(() => {
+    if (!activeLsf?.data?.length) return null;
+    if (activeLsf.blipTime == null) return activeLsf.data;
+    return activeLsf.data
+      .filter(d => d.time >= activeLsf.blipTime)
+      .map(d => ({...d, time: +(d.time - activeLsf.blipTime).toFixed(3)}));
+  }, [activeLsf]);
+
+  // Inverse dynamics — recomputes only when inputs change, NOT per frame
+  const invDynData = useMemo(() =>
+    computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, activeJob?.forceFile?.data, forceOffset, forceDirKey),
+  [activeSkelMvnx, bodyMass, clippedLsf, activeJob?.forceFile, forceOffset, forceDirKey]); // eslint-disable-line
 
   // ════════════════════════════════════════════════════════════════════════════
   //  TAB 0 — OVERVIEW
@@ -1442,9 +1646,165 @@ function Dashboard({ session }) {
   };
 
   // ════════════════════════════════════════════════════════════════════════════
+  //  TAB 5 — DYNAMICS
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderDynamics = () => {
+    const hasMvnx = !!activeSkelMvnx?.frames?.length;
+    const hasLS   = !!clippedLsf?.length;
+    const hasF    = !!activeJob?.forceFile?.data?.length;
+    const hasData = invDynData?.length > 0;
+
+    // Build per-joint chart data from flat invDynData
+    const jData = (key) => invDynData?.map(d => ({ t:d.t, FE:d[key]?.FE, LB:d[key]?.LB, AR:d[key]?.AR })) || [];
+
+    const JointChart = ({title, dataKey, h=150}) => {
+      const d = jData(dataKey);
+      if (!d.length) return null;
+      const peak = Math.max(...d.map(r => Math.abs(r.FE||0)));
+      return (
+        <ChartCard title={<span>{title}<span style={{fontSize:10,color:C.muted,marginLeft:8}}>peak FE {peak.toFixed(0)} Nm</span></span>} h={h}>
+          <ResponsiveContainer>
+            <LineChart data={d}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+              <XAxis dataKey="t" type="number" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+              <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="Nm"/>
+              <Tooltip content={Tt}/>
+              <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
+              <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE"/>
+              <Line type="monotone" dataKey="LB" stroke={C.amber} dot={false} strokeWidth={1.5} name="LB"/>
+              <Line type="monotone" dataKey="AR" stroke={C.rose}  dot={false} strokeWidth={1.5} name="AR"/>
+              <Legend wrapperStyle={{fontSize:10}}/>
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      );
+    };
+
+    const SecHdr = ({label, color}) => (
+      <div style={{fontSize:11,fontWeight:700,color,textTransform:"uppercase",letterSpacing:1,
+        margin:"18px 0 8px",borderBottom:`1px solid ${color}40`,paddingBottom:4}}>{label}</div>
+    );
+
+    return (
+      <div>
+        {/* Config bar */}
+        <div style={{display:"flex",gap:14,marginBottom:16,alignItems:"center",flexWrap:"wrap",
+          background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px"}}>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <span style={{fontSize:12,color:C.muted}}>Body mass:</span>
+            <input type="number" step="any" min={20} max={250} value={bodyMass}
+              onChange={e=>{const v=parseFloat(e.target.value); if(!isNaN(v)&&v>0) setBodyMass(v);}}
+              style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
+                padding:"3px 8px",color:C.accent,fontSize:12}}/>
+            <span style={{fontSize:12,color:C.muted}}>kg</span>
+          </div>
+          {hasF && (
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:12,color:C.muted}}>WiDACS direction:</span>
+              <select value={forceDirKey} onChange={e=>setForceDirKey(e.target.value)}
+                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
+                  padding:"3px 6px",color:C.text,fontSize:11}}>
+                <option value="hand">Auto (hand direction)</option>
+                <option value="+x">Push Forward (+X)</option>
+                <option value="-x">Pull Back (−X)</option>
+                <option value="+y">Push Left (+Y)</option>
+                <option value="-y">Push Right (−Y)</option>
+                <option value="+z">Lift (↑Z)</option>
+                <option value="-z">Lower (↓Z)</option>
+              </select>
+            </div>
+          )}
+          <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
+            {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"} · {hasF?"✓ WiDACS":"✗ WiDACS"}
+          </div>
+        </div>
+
+        {!hasMvnx && <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data."/>}
+        {hasMvnx && !hasLS && (
+          <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
+            padding:"10px 14px",marginBottom:12,fontSize:12,color:C.amber}}>
+            No LoadSOL data — lower extremity and spinal moments will be zero (no ground reaction forces).
+            Upload a LoadSOL file and set blip alignment to get meaningful results.
+          </div>
+        )}
+
+        {hasData && (
+          <>
+            <SecHdr label="Lumbar Spine  (Bottom-Up via LoadSOL GRF)" color={C.accent}/>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:12,marginBottom:4}}>
+              <JointChart title="L5/S1" dataKey="L5S1"/>
+              <JointChart title="L4/L3" dataKey="L4L3"/>
+              <JointChart title="L1/T12" dataKey="L1T12"/>
+              <JointChart title="T9/T8"  dataKey="T9T8"/>
+            </div>
+
+            <SecHdr label="Lower Extremity  (Bottom-Up via LoadSOL GRF)" color={C.sky}/>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:12,marginBottom:4}}>
+              <JointChart title="R Hip"   dataKey="hipR"/>
+              <JointChart title="L Hip"   dataKey="hipL"/>
+              <JointChart title="R Knee"  dataKey="kneeR"/>
+              <JointChart title="L Knee"  dataKey="kneeL"/>
+              <JointChart title="R Ankle" dataKey="ankleR"/>
+              <JointChart title="L Ankle" dataKey="ankleL"/>
+            </div>
+
+            {hasF && (
+              <>
+                <SecHdr label="Right Upper Extremity  (Top-Down via WiDACS)" color={C.violet}/>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:12,marginBottom:4}}>
+                  <JointChart title="R Shoulder" dataKey="shoulderR"/>
+                  <JointChart title="R Elbow"    dataKey="elbowR"/>
+                  <JointChart title="R Wrist"    dataKey="wristR"/>
+                </div>
+              </>
+            )}
+
+            {/* Peak summary table */}
+            <SecHdr label="Peak Joint Moment Summary" color={C.emerald}/>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                <thead>
+                  <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                    {["Joint","Peak FE (Nm)","Peak LB (Nm)","Peak AR (Nm)"].map(h=>(
+                      <th key={h} style={{textAlign:"left",padding:"4px 10px",color:C.muted,fontWeight:600}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    {label:"L5/S1",  key:"L5S1"},
+                    {label:"L4/L3",  key:"L4L3"},
+                    {label:"R Hip",  key:"hipR"},
+                    {label:"L Hip",  key:"hipL"},
+                    {label:"R Knee", key:"kneeR"},
+                    {label:"L Knee", key:"kneeL"},
+                    ...(hasF?[{label:"R Shoulder",key:"shoulderR"},{label:"R Elbow",key:"elbowR"}]:[]),
+                  ].map(({label,key}) => {
+                    const d = invDynData.map(r => r[key]).filter(Boolean);
+                    if (!d.length) return null;
+                    const pk = (comp) => Math.max(...d.map(r => Math.abs(r[comp]||0))).toFixed(1);
+                    return (
+                      <tr key={key} style={{borderBottom:`1px solid ${C.border}20`}}>
+                        <td style={{padding:"4px 10px",color:C.text,fontWeight:500}}>{label}</td>
+                        <td style={{padding:"4px 10px",color:C.teal}}>{pk("FE")}</td>
+                        <td style={{padding:"4px 10px",color:C.amber}}>{pk("LB")}</td>
+                        <td style={{padding:"4px 10px",color:C.rose}}>{pk("AR")}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
   //  ROOT RENDER
   // ════════════════════════════════════════════════════════════════════════════
-  const panels = [renderOverview,renderSkeleton,renderCycles,renderLoadSOL,renderForces,renderJobs,renderPipeline];
+  const panels = [renderOverview,renderSkeleton,renderCycles,renderLoadSOL,renderForces,renderDynamics,renderJobs,renderPipeline];
   return (
     <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
       <div style={{background:`linear-gradient(135deg,${C.bg},${C.card})`,borderBottom:`1px solid ${C.border}`,padding:"14px 24px"}}>
