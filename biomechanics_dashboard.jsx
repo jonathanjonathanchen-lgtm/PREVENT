@@ -375,6 +375,7 @@ function Dashboard({ session }) {
   const [tab,         setTab]         = useState(0);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [filesLoading,setFilesLoading]= useState(false);
+  const [loadingMsg,   setLoadingMsg]  = useState("");
 
   // Modals
   const [showJobModal,    setShowJobModal]    = useState(false);
@@ -455,9 +456,11 @@ function Dashboard({ session }) {
       setFilesLoading(true);
       readyToSaveRef.current = false;
 
-      const dl = async (path) => {
+      const dl = async (name, path) => {
+        setLoadingMsg(`Downloading ${name}…`);
         const { data, error } = await supabase.storage.from(BUCKET).download(path);
         if (error || !data) return null;
+        setLoadingMsg(`Parsing ${name}…`);
         return await data.text();
       };
 
@@ -465,9 +468,12 @@ function Dashboard({ session }) {
       const lsRec    = records.find(r => r.file_type === "loadsol");
       const fRec     = records.find(r => r.file_type === "force");
 
+      const total = mvnxRecs.length + (lsRec?1:0) + (fRec?1:0);
+      let done = 0;
+
       const mvnxFiles = [];
       for (const rec of mvnxRecs) {
-        const text = await dl(rec.storage_path);
+        const text = await dl(`${rec.file_name} (${++done}/${total})`, rec.storage_path);
         if (!text) continue;
         const p = parseMVNX(text);
         if (p.ok) mvnxFiles.push({ id: rec.id, storagePath: rec.storage_path, name: rec.file_name, ...p });
@@ -475,7 +481,7 @@ function Dashboard({ session }) {
 
       let loadsolFile = null;
       if (lsRec) {
-        const text = await dl(lsRec.storage_path);
+        const text = await dl(`${lsRec.file_name} (${++done}/${total})`, lsRec.storage_path);
         if (text) {
           const p = parseLoadSOL(text);
           if (p.ok) loadsolFile = { id: lsRec.id, storagePath: lsRec.storage_path, name: lsRec.file_name, ...p };
@@ -484,7 +490,7 @@ function Dashboard({ session }) {
 
       let forceFile = null;
       if (fRec) {
-        const text = await dl(fRec.storage_path);
+        const text = await dl(`${fRec.file_name} (${++done}/${total})`, fRec.storage_path);
         if (text) {
           const p = parseForceFile(text);
           if (p.ok) forceFile = { id: fRec.id, storagePath: fRec.storage_path, name: fRec.file_name, ...p };
@@ -493,6 +499,7 @@ function Dashboard({ session }) {
 
       setJobs(prev => prev.map(j => j.id === activeJobId ? { ...j, mvnxFiles, loadsolFile, forceFile } : j));
       setFilesLoading(false);
+      setLoadingMsg("");
       await loadSettings(activeJobId);
     };
 
@@ -700,7 +707,7 @@ function Dashboard({ session }) {
     if (filesLoading) return (
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:300,gap:14}}>
         <Spinner size={32}/>
-        <div style={{fontSize:13,color:C.muted}}>Loading files from cloud…</div>
+        <div style={{fontSize:13,color:C.muted}}>{loadingMsg || "Loading files from cloud…"}</div>
       </div>
     );
 
