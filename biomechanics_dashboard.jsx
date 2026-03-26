@@ -549,7 +549,8 @@ function Dashboard({ session }) {
       .insert({ name: newJobName.trim(), created_by: session.user.id })
       .select()
       .single();
-    if (!error && data) {
+    if (error) { alert("Create job error: " + error.message); return; }
+    if (data) {
       const job = { ...data, createdAt: new Date(data.created_at).toLocaleDateString(), mvnxFiles: [], loadsolFile: null, forceFile: null, _fileRecords: [] };
       setJobs(prev => [job, ...prev]);
       setActiveJobId(data.id);
