@@ -700,6 +700,26 @@ function Dashboard({ session }) {
     return Array.from({length:n}, (_,i) => ({time:+(base+(i+1)*dt).toFixed(3), force:+susForce.toFixed(1), ext:true}));
   }, [activeJob, forceOffset, extendDuration]);
 
+  // Memoised joint panel data — only recomputes when panels or MVNX file changes,
+  // NOT on every skelFrame tick. This prevents Recharts from reinitialising every frame.
+  const activeSkelMvnx = activeJob?.mvnxFiles?.[skelFileIdx];
+  const panelData = useMemo(() => {
+    const mvnx = activeSkelMvnx;
+    if (!mvnx?.frames?.length) return jointPanels.map(() => []);
+    return jointPanels.map(panel => {
+      const def = KEY_JOINTS[panel.jointKey];
+      const ji  = mvnx.jointLabels?.findIndex(l => def.r.test(l));
+      if (ji == null || ji < 0) return [];
+      const stride = Math.max(1, Math.floor(mvnx.frames.length / 200));
+      return mvnx.frames.filter((_,i) => i % stride === 0).map(f => ({
+        t: +f.time.toFixed(2),
+        ...(panel.planes & 1 ? {FE: +(f.ja?.[ji*3]   ?? 0).toFixed(2)} : {}),
+        ...(panel.planes & 2 ? {LB: +(f.ja?.[ji*3+1] ?? 0).toFixed(2)} : {}),
+        ...(panel.planes & 4 ? {AR: +(f.ja?.[ji*3+2] ?? 0).toFixed(2)} : {}),
+      }));
+    });
+  }, [jointPanels, activeSkelMvnx]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ════════════════════════════════════════════════════════════════════════════
   //  TAB 0 — OVERVIEW
   // ════════════════════════════════════════════════════════════════════════════
@@ -777,20 +797,6 @@ function Dashboard({ session }) {
     const W=300, H=440;
     const pts = projectPos(positions, skelView, W, H);
     const ft = frame?.time || 0;
-
-    const buildPanelData = (jk, planeSet) => {
-      if (!hasData) return [];
-      const def = KEY_JOINTS[jk];
-      const ji = mvnx.jointLabels?.findIndex(l => def.r.test(l));
-      if (ji == null || ji < 0) return [];
-      const stride = Math.max(1, Math.floor(mvnx.frames.length/200));
-      return mvnx.frames.filter((_,i) => i%stride===0).map(f => ({
-        t: +f.time.toFixed(2),
-        ...(planeSet & 1 ? {FE: +(f.ja?.[ji*3]??0).toFixed(2)} : {}),
-        ...(planeSet & 2 ? {LB: +(f.ja?.[ji*3+1]??0).toFixed(2)} : {}),
-        ...(planeSet & 4 ? {AR: +(f.ja?.[ji*3+2]??0).toFixed(2)} : {}),
-      }));
-    };
 
     const loadsolFilesList = activeJob?.loadsolFiles || [];
     const lsfIdx = loadsolPairings[skelFileIdx] ?? skelLoadsolIdx;
@@ -893,7 +899,7 @@ function Dashboard({ session }) {
           <div>
             {jointPanels.map((panel,pi) => {
               const kj   = KEY_JOINTS[panel.jointKey];
-              const data = buildPanelData(panel.jointKey, panel.planes);
+              const data = panelData[pi] || [];
               // Current angle values for live readout
               const ji = hasData ? mvnx.jointLabels?.findIndex(l => kj.r.test(l)) : -1;
               const curAngles = (ji >= 0 && frame?.ja) ? {
