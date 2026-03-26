@@ -905,11 +905,12 @@ function Dashboard({ session }) {
                   <ResponsiveContainer>
                     <LineChart data={data}>
                       <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                      <XAxis dataKey="t" tick={{fill:C.muted,fontSize:9}} stroke={C.border}/>
+                      <XAxis dataKey="t" type="number" domain={[0, +(mvnx.duration||0).toFixed(2)]}
+                        tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
                       <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/>
                       <Tooltip content={Tt}/>
                       <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
-                      <ReferenceLine x={+ft.toFixed(2)} stroke={C.amber} strokeWidth={2}/>
+                      <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
                       {PLANE_LABELS.map((pl,pli)=>panel.planes.has(pli)&&(
                         <Line key={pl} type="monotone" dataKey={pl} stroke={PLANE_COLORS[pli]}
                           dot={false} strokeWidth={1.5} name={PLANE_NAMES[pli]}/>
@@ -935,10 +936,11 @@ function Dashboard({ session }) {
                 <ChartCard title="LoadSOL GRF (clipped to XSENS start)" h={160}>
                   <ResponsiveContainer><LineChart data={d}>
                     <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                    <XAxis dataKey="time" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                    <XAxis dataKey="time" type="number" domain={[0,"auto"]}
+                      tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
                     <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/>
                     <Tooltip content={Tt}/>
-                    <ReferenceLine x={+ft.toFixed(3)} stroke={C.amber} strokeWidth={2} strokeDasharray="3 2"/>
+                    <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
                     <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={1.5} name="L"/>
                     <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={1.5} name="R"/>
                   </LineChart></ResponsiveContainer>
