@@ -546,7 +546,7 @@ function Dashboard({ session }) {
     if (!newJobName.trim()) return;
     const { data, error } = await supabase
       .from("jobs")
-      .insert({ name: newJobName.trim(), created_by: session.user.id })
+      .insert({ name: newJobName.trim() })
       .select()
       .single();
     if (error) { alert("Create job error: " + error.message); return; }
