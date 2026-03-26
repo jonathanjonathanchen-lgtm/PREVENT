@@ -936,7 +936,7 @@ function Dashboard({ session }) {
                   <ResponsiveContainer>
                     <LineChart data={data}>
                       <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                      <XAxis dataKey="t" type="number" domain={[0, +(mvnx.duration||0).toFixed(2)]}
+                      <XAxis dataKey="t" type="number" domain={[0, +(mvnx?.duration||0).toFixed(2)]}
                         tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
                       <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/>
                       <Tooltip content={Tt}/>
@@ -984,8 +984,8 @@ function Dashboard({ session }) {
                 action={
                   <div style={{display:"flex",gap:6,alignItems:"center"}}>
                     <span style={{fontSize:10,color:C.muted}}>offset:</span>
-                    <input type="number" step={0.1} value={forceOffset.toFixed(2)}
-                      onChange={e=>setForceOffset(+e.target.value)}
+                    <input type="number" step="any" value={forceOffset}
+                      onChange={e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)) setForceOffset(v); }}
                       style={{width:64,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 6px",color:C.accent,fontSize:11,textAlign:"center"}}/>
                     <span style={{fontSize:10,color:C.muted}}>s</span>
                     <Btn small onClick={()=>setForceOffset(0)}>0</Btn>
