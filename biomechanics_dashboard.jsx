@@ -445,9 +445,10 @@ const FileBar = ({job, onUpload, onRemove}) => {
         <Chip key={i} color={C.sky} label={f.name} onX={()=>onRemove("loadsol",i)}/>
       ))}
       <Chip color={C.sky} label="+ LoadSOL" onAdd={()=>onUpload("loadsol")}/>
-      {job.forceFile
-        ? <Chip color={C.violet} label={job.forceFile.name} onX={()=>onRemove("force")}/>
-        : <Chip color={C.violet} label="+ Force CSV" onAdd={()=>onUpload("force")}/>}
+      {(job.forceFiles||[]).map((f,i)=>(
+        <Chip key={i} color={C.violet} label={f.name} onX={()=>onRemove("force",i)}/>
+      ))}
+      <Chip color={C.violet} label="+ Force CSV" onAdd={()=>onUpload("force")}/>
     </div>
   );
 };
@@ -580,11 +581,13 @@ function Dashboard({ session }) {
   const [cycleJointKey, setCycleJointKey] = useState(0);
 
   // Dynamics
-  const [bodyMass,    setBodyMass]    = useState(75);
-  const [forceDirKey, setForceDirKey] = useState('hand');
+  const [bodyMass,       setBodyMass]       = useState(75);
+
+  // Force files — per-file settings keyed by storagePath
+  const [forceFileSets,  setForceFileSets]  = useState({});  // {[sp]: {offset, dirKey}}
+  const [activeForceIdx, setActiveForceIdx] = useState(0);
 
   // Forces / settings
-  const [forceOffset,    setForceOffset]    = useState(0);
   const [extendDuration, setExtendDuration] = useState(0);
   const [forceBlocks,    setForceBlocks]    = useState([]);
   const [showBlockForm,  setShowBlockForm]  = useState(false);
@@ -595,6 +598,14 @@ function Dashboard({ session }) {
   const readyToSaveRef     = useRef(false);
 
   const activeJob = jobs.find(j => j.id === activeJobId);
+
+  // Derived force file — per-file offset + direction from forceFileSets
+  const activeForce      = activeJob?.forceFiles?.[activeForceIdx] ?? null;
+  const _afSets          = forceFileSets[activeForce?.storagePath] ?? {};
+  const forceOffset      = _afSets.offset  ?? 0;
+  const forceDirKey      = _afSets.dirKey   ?? 'hand';
+  const setForceOffset   = v => { if (!activeForce) return; setForceFileSets(p => ({...p, [activeForce.storagePath]: {...(p[activeForce.storagePath]||{}), offset: v}})); };
+  const setForceDirKey   = v => { if (!activeForce) return; setForceFileSets(p => ({...p, [activeForce.storagePath]: {...(p[activeForce.storagePath]||{}), dirKey: v}})); };
 
   // ── Load all jobs on mount ────────────────────────────────────────────────
   useEffect(() => {
@@ -610,7 +621,7 @@ function Dashboard({ session }) {
           createdAt: new Date(j.created_at).toLocaleDateString(),
           mvnxFiles: [],
           loadsolFiles: [],
-          forceFile: null,
+          forceFiles: [],
           _fileRecords: j.job_files || [],
         })));
       }
@@ -650,11 +661,11 @@ function Dashboard({ session }) {
         return await data.text();
       };
 
-      const mvnxRecs = records.filter(r => r.file_type === "mvnx").sort((a,b) => a.sort_order - b.sort_order);
-      const lsRecs   = records.filter(r => r.file_type === "loadsol").sort((a,b) => a.sort_order - b.sort_order);
-      const fRec     = records.find(r => r.file_type === "force");
+      const mvnxRecs  = records.filter(r => r.file_type === "mvnx").sort((a,b) => a.sort_order - b.sort_order);
+      const lsRecs    = records.filter(r => r.file_type === "loadsol").sort((a,b) => a.sort_order - b.sort_order);
+      const forceRecs = records.filter(r => r.file_type === "force").sort((a,b) => a.sort_order - b.sort_order);
 
-      const total = mvnxRecs.length + lsRecs.length + (fRec?1:0);
+      const total = mvnxRecs.length + lsRecs.length + forceRecs.length;
       let done = 0;
 
       const mvnxFiles = [];
@@ -674,16 +685,16 @@ function Dashboard({ session }) {
         }
       }
 
-      let forceFile = null;
-      if (fRec) {
+      const forceFiles = [];
+      for (const fRec of forceRecs) {
         const text = await dl(`${fRec.file_name} (${++done}/${total})`, fRec.storage_path);
         if (text) {
           const p = parseForceFile(text);
-          if (p.ok) forceFile = { id: fRec.id, storagePath: fRec.storage_path, name: fRec.file_name, ...p };
+          if (p.ok) forceFiles.push({ id: fRec.id, storagePath: fRec.storage_path, name: fRec.file_name, ...p });
         }
       }
 
-      setJobs(prev => prev.map(j => j.id === activeJobId ? { ...j, mvnxFiles, loadsolFiles, forceFile } : j));
+      setJobs(prev => prev.map(j => j.id === activeJobId ? { ...j, mvnxFiles, loadsolFiles, forceFiles } : j));
       setFilesLoading(false);
       setLoadingMsg("");
       await loadSettings(activeJobId);
@@ -696,11 +707,11 @@ function Dashboard({ session }) {
   // ── Load settings for active job ──────────────────────────────────────────
   const loadSettings = async (jobId) => {
     readyToSaveRef.current = false;
-    setForceOffset(0); setExtendDuration(0); setForceBlocks([]);
+    setExtendDuration(0); setForceBlocks([]);
     setJointPanels([{jointKey:0, planes:4}]);
     setSkelFrame(0); setSkelFileIdx(0); setSkelPlaying(false);
     setSkelLoadsolIdx(0); setLoadsolPairings({});
-    setBodyMass(75); setForceDirKey('hand');
+    setBodyMass(75); setForceFileSets({}); setActiveForceIdx(0);
 
     const { data } = await supabase
       .from("job_settings")
@@ -709,7 +720,6 @@ function Dashboard({ session }) {
       .maybeSingle();
 
     if (data) {
-      setForceOffset(data.force_offset || 0);
       setExtendDuration(data.extend_duration || 0);
       setForceBlocks(data.force_blocks || []);
       if (data.joint_panels?.length) {
@@ -719,8 +729,8 @@ function Dashboard({ session }) {
         })));
       }
       if (data.loadsol_pairings) setLoadsolPairings(data.loadsol_pairings);
-      if (data.body_mass > 0)   setBodyMass(data.body_mass);
-      if (data.force_dir_key)   setForceDirKey(data.force_dir_key);
+      if (data.body_mass > 0)    setBodyMass(data.body_mass);
+      if (data.force_file_sets)  setForceFileSets(data.force_file_sets);
     }
     // Short delay so the save effect doesn't fire immediately after loading
     setTimeout(() => { readyToSaveRef.current = true; }, 600);
@@ -732,18 +742,17 @@ function Dashboard({ session }) {
     const timer = setTimeout(() => {
       supabase.from("job_settings").upsert({
         job_id: activeJobId,
-        force_offset: forceOffset,
         extend_duration: extendDuration,
         force_blocks: forceBlocks,
         joint_panels: jointPanels,
         loadsol_pairings: loadsolPairings,
         body_mass: bodyMass,
-        force_dir_key: forceDirKey,
+        force_file_sets: forceFileSets,
         updated_at: new Date().toISOString(),
       }, { onConflict: "job_id" });
     }, 1500);
     return () => clearTimeout(timer);
-  }, [activeJobId, forceOffset, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceDirKey]);
+  }, [activeJobId, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets]);
 
   // ── Job helpers ───────────────────────────────────────────────────────────
   const createJob = async () => {
@@ -755,7 +764,7 @@ function Dashboard({ session }) {
       .single();
     if (error) { alert("Create job error: " + error.message); return; }
     if (data) {
-      const job = { ...data, createdAt: new Date(data.created_at).toLocaleDateString(), mvnxFiles: [], loadsolFiles: [], forceFile: null, _fileRecords: [] };
+      const job = { ...data, createdAt: new Date(data.created_at).toLocaleDateString(), mvnxFiles: [], loadsolFiles: [], forceFiles: [], _fileRecords: [] };
       setJobs(prev => [job, ...prev]);
       setActiveJobId(data.id);
       loadedJobsRef.current.add(data.id);
@@ -804,7 +813,9 @@ function Dashboard({ session }) {
       if (upErr) { alert(`Upload error: ${upErr.message}`); continue; }
 
       // Store metadata in DB
-      const sortOrder = uploadType === "mvnx" ? (activeJob?.mvnxFiles?.length || 0) : 0;
+      const sortOrder = uploadType === "mvnx"    ? (activeJob?.mvnxFiles?.length    || 0)
+                      : uploadType === "loadsol" ? (activeJob?.loadsolFiles?.length  || 0)
+                      : uploadType === "force"   ? (activeJob?.forceFiles?.length    || 0) : 0;
       const { data: rec, error: dbErr } = await supabase.from("job_files").insert({
         job_id: activeJobId,
         file_type: uploadType,
@@ -825,7 +836,8 @@ function Dashboard({ session }) {
         const f = { id: rec.id, storagePath, name: file.name, ...parsed };
         if (uploadType === "mvnx")    return { ...j, mvnxFiles: [...j.mvnxFiles, f], _fileRecords: [...j._fileRecords, rec] };
         if (uploadType === "loadsol") return { ...j, loadsolFiles: [...(j.loadsolFiles||[]), f], _fileRecords: [...j._fileRecords, rec] };
-        return { ...j, forceFile: f, _fileRecords: [...j._fileRecords, rec] };
+        if (uploadType === "force")   return { ...j, forceFiles: [...(j.forceFiles||[]), f], _fileRecords: [...j._fileRecords, rec] };
+        return j;
       }));
     }
   }, [activeJobId, uploadType, activeJob]);
@@ -837,7 +849,7 @@ function Dashboard({ session }) {
     let fileObj;
     if (type === "mvnx")    fileObj = job.mvnxFiles[idx];
     if (type === "loadsol") fileObj = job.loadsolFiles[idx];
-    if (type === "force")   fileObj = job.forceFile;
+    if (type === "force")   fileObj = job.forceFiles[idx];
     if (!fileObj) return;
 
     if (fileObj.storagePath) await supabase.storage.from(BUCKET).remove([fileObj.storagePath]);
@@ -847,8 +859,11 @@ function Dashboard({ session }) {
       if (j.id !== activeJobId) return j;
       if (type === "mvnx")    return { ...j, mvnxFiles: j.mvnxFiles.filter((_,i) => i !== idx) };
       if (type === "loadsol") return { ...j, loadsolFiles: j.loadsolFiles.filter((_,i) => i !== idx) };
-      return { ...j, forceFile: null };
+      if (type === "force")   return { ...j, forceFiles: j.forceFiles.filter((_,i) => i !== idx) };
+      return j;
     }));
+    // Clamp activeForceIdx if the removed file was at or beyond current idx
+    if (type === "force") setActiveForceIdx(prev => Math.max(0, Math.min(prev, (job.forceFiles.length - 2))));
   }, [activeJobId, jobs]);
 
   // ── Skeleton animation ────────────────────────────────────────────────────
@@ -864,28 +879,26 @@ function Dashboard({ session }) {
 
   // ── Derived force data ────────────────────────────────────────────────────
   const shiftedForce = useMemo(() => {
-    const ff = activeJob?.forceFile;
-    if (!ff?.data) return [];
-    return ff.data.map(d => ({...d, time:+(d.time+forceOffset).toFixed(3)}));
-  }, [activeJob, forceOffset]);
+    if (!activeForce?.data) return [];
+    return activeForce.data.map(d => ({...d, time:+(d.time+forceOffset).toFixed(3)}));
+  }, [activeForce, forceOffset]);
 
   const extendedForce = useMemo(() => {
-    const ff = activeJob?.forceFile;
-    if (!ff?.data?.length || extendDuration <= 0) return null;
-    const peak = ff.stats.peak;
+    if (!activeForce?.data?.length || extendDuration <= 0) return null;
+    const peak = activeForce.stats.peak;
     const threshold = peak * 0.35;
     let susEnd = 0;
-    for (let i = ff.data.length-1; i >= 0; i--) {
-      if (ff.data[i].force > threshold) { susEnd = i; break; }
+    for (let i = activeForce.data.length-1; i >= 0; i--) {
+      if (activeForce.data[i].force > threshold) { susEnd = i; break; }
     }
     if (susEnd <= 0) return null;
-    const susSlice = ff.data.slice(0, susEnd+1).filter(d => d.force > threshold);
+    const susSlice = activeForce.data.slice(0, susEnd+1).filter(d => d.force > threshold);
     const susForce = susSlice.reduce((s,d) => s+d.force, 0) / susSlice.length;
-    const dt = ff.data.length > 1 ? ff.data[1].time - ff.data[0].time : 0.002;
+    const dt = activeForce.data.length > 1 ? activeForce.data[1].time - activeForce.data[0].time : 0.002;
     const n = Math.round(extendDuration / dt);
-    const base = ff.data[susEnd].time + forceOffset;
+    const base = activeForce.data[susEnd].time + forceOffset;
     return Array.from({length:n}, (_,i) => ({time:+(base+(i+1)*dt).toFixed(3), force:+susForce.toFixed(1), ext:true}));
-  }, [activeJob, forceOffset, extendDuration]);
+  }, [activeForce, forceOffset, extendDuration]);
 
   // Memoised joint panel data — only recomputes when panels or MVNX file changes,
   // NOT on every skelFrame tick. This prevents Recharts from reinitialising every frame.
@@ -922,8 +935,8 @@ function Dashboard({ session }) {
 
   // Inverse dynamics — recomputes only when inputs change, NOT per frame
   const invDynData = useMemo(() =>
-    computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, activeJob?.forceFile?.data, forceOffset, forceDirKey),
-  [activeSkelMvnx, bodyMass, clippedLsf, activeJob?.forceFile, forceOffset, forceDirKey]); // eslint-disable-line
+    computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, activeForce?.data, forceOffset, forceDirKey),
+  [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey]); // eslint-disable-line
 
   // ════════════════════════════════════════════════════════════════════════════
   //  TAB 0 — OVERVIEW
@@ -931,7 +944,7 @@ function Dashboard({ session }) {
   const renderOverview = () => {
     const hasMvnx = !!activeJob?.mvnxFiles?.length;
     const hasLS   = !!activeJob?.loadsolFiles?.length;
-    const hasF    = !!activeJob?.forceFile;
+    const hasF    = !!activeJob?.forceFiles?.length;
     const sc = (ok,label,detail) => (
       <div style={{background:ok?C.accent+"12":C.card,border:`1px solid ${ok?C.accent+"50":C.border}`,borderRadius:8,padding:"10px 14px"}}>
         <div style={{fontSize:12,fontWeight:600,color:ok?C.accent:C.muted,marginBottom:2}}>{ok?"✓ ":"○ "}{label}</div>
@@ -951,13 +964,13 @@ function Dashboard({ session }) {
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:8,marginBottom:18}}>
           {sc(hasMvnx,"MVNX",hasMvnx?`${activeJob.mvnxFiles.length} cycle(s)`:"Upload .mvnx")}
           {sc(hasLS,"LoadSOL",hasLS?`${activeJob.loadsolFiles.length} file(s)`:"Upload TXT")}
-          {sc(hasF,"Force",hasF?activeJob.forceFile.name:"Upload CSV")}
+          {sc(hasF,"Force",hasF?`${activeJob.forceFiles.length} file(s)`:"Upload CSV")}
         </div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:18}}>
           <Stat label="MVNX Cycles"    value={activeJob?.mvnxFiles?.length||"—"} unit="files"/>
           <Stat label="Trial Duration" value={activeJob?.mvnxFiles?.[0]?.duration?.toFixed(1)||"—"} unit="s"/>
           <Stat label="GRF Peak (R)"   value={activeJob?.loadsolFiles?.[0]?.stats?.rightMax?.toFixed(0)||"—"} unit="N"/>
-          <Stat label="Force Peak"     value={activeJob?.forceFile?.stats?.peak?.toFixed(1)||"—"} unit="N"/>
+          <Stat label="Force Peak"     value={activeForce?.stats?.peak?.toFixed(1)||"—"} unit="N"/>
           <Stat label="XSENS Blip"     value={activeJob?.loadsolFiles?.[0]?.blipTime?.toFixed(3)||"—"} unit="s"
             sub="sync marker" color={activeJob?.loadsolFiles?.[0]?.blipTime?C.amber:undefined}/>
         </div>
@@ -1007,7 +1020,7 @@ function Dashboard({ session }) {
     const lsfIdx = loadsolPairings[skelFileIdx] ?? skelLoadsolIdx;
     const lsf = loadsolFilesList[lsfIdx] || loadsolFilesList[0] || null;
     const hasLS = !!lsf?.data?.length;
-    const ff   = activeJob?.forceFile;
+    const ff   = activeForce;
     const hasF = !!ff?.data?.length;
 
     if (filesLoading) return (
@@ -1391,12 +1404,21 @@ function Dashboard({ session }) {
   //  TAB 4 — FORCES
   // ════════════════════════════════════════════════════════════════════════════
   const renderForces = () => {
-    const ff  = activeJob?.forceFile;
+    const ff  = activeForce;
     const lsf = activeJob?.loadsolFiles?.[0];
     if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
+    const forceFiles = activeJob?.forceFiles || [];
     return (
       <div>
         {activeJob&&<FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
+        {forceFiles.length > 1 && (
+          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
+            <span style={{fontSize:12,color:C.muted}}>Active force file:</span>
+            {forceFiles.map((f,i) => (
+              <Btn key={i} small active={activeForceIdx===i} onClick={()=>setActiveForceIdx(i)}>{f.name}</Btn>
+            ))}
+          </div>
+        )}
         {!ff ? (
           <EmptyState icon="📈" title="No force data" detail="Upload a WiDACS CSV or any CSV with time in col 1, force in col 2."
             action={activeJobId&&<Btn active onClick={()=>openUpload("force")}>Upload Force CSV</Btn>}/>
@@ -1651,7 +1673,7 @@ function Dashboard({ session }) {
   const renderDynamics = () => {
     const hasMvnx = !!activeSkelMvnx?.frames?.length;
     const hasLS   = !!clippedLsf?.length;
-    const hasF    = !!activeJob?.forceFile?.data?.length;
+    const hasF    = !!activeForce?.data?.length;
     const hasData = invDynData?.length > 0;
 
     // Build per-joint chart data from flat invDynData
@@ -1698,9 +1720,20 @@ function Dashboard({ session }) {
                 padding:"3px 8px",color:C.accent,fontSize:12}}/>
             <span style={{fontSize:12,color:C.muted}}>kg</span>
           </div>
+          {(activeJob?.forceFiles?.length||0) > 1 && (
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:12,color:C.muted}}>Force file:</span>
+              <select value={activeForceIdx} onChange={e=>setActiveForceIdx(+e.target.value)}
+                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
+                {(activeJob?.forceFiles||[]).map((f,i)=>(
+                  <option key={i} value={i}>{f.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {hasF && (
             <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.muted}}>WiDACS direction:</span>
+              <span style={{fontSize:12,color:C.muted}}>Direction:</span>
               <select value={forceDirKey} onChange={e=>setForceDirKey(e.target.value)}
                 style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
                   padding:"3px 6px",color:C.text,fontSize:11}}>
