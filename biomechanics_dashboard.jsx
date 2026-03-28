@@ -303,12 +303,48 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
       return u.M;
     };
 
-    // FE ≈ M_Y (sagittal), LB ≈ M_X (frontal), AR ≈ M_Z (transverse)
-    const fmt = M => ({ FE:+M[1].toFixed(1), LB:+M[0].toFixed(1), AR:+M[2].toFixed(1) });
+    // ── Top-down L5/S1: sum moments of all segments above L5/S1 about r_L5S1 ──
+    // M_L5S1_top = -[ Σ(r_com_i − r_L5S1)×W_i + Σ(r_app_hand − r_L5S1)×F_hand ]
+    const ABOVE_L5S1 = ['L5','L3','T12','T8','Neck','Head',
+      'RightShoulder','LeftShoulder','RightUpperArm','LeftUpperArm',
+      'RightForearm','LeftForearm','RightHand','LeftHand'];
+    let topM = [0,0,0];
+    for (const seg of ABOVE_L5S1) {
+      const idx = si[seg]; if (idx == null) continue;
+      const [mf,cf] = WINTER[seg]||[0.001,0.5];
+      const r_p = vget(frame.pos, idx);
+      const dSeg = SEG_DISTAL[seg];
+      const r_d  = dSeg&&si[dSeg]!=null ? vget(frame.pos,si[dSeg]) : r_p;
+      const r_c  = vadd(r_p, vscale(vsub(r_d,r_p),cf));
+      topM = vadd(topM, vcross(vsub(r_c, r_L5S1), vscale(G, mf*bodyMass)));
+    }
+    if (forceData?.length) {
+      const addHandMoment = (cap) => {
+        const hi = si[`${cap}Hand`]; if (hi==null) return;
+        const r_w  = vget(frame.pos, hi);
+        const fi2  = si[`${cap}Forearm`]!=null ? si[`${cap}Forearm`] : si[`${cap}UpperArm`];
+        const r_e  = fi2!=null ? vget(frame.pos,fi2) : r_w;
+        const hDir = vnorm(vsub(r_w,r_e));
+        const r_ap = vadd(r_w, vscale(hDir,0.10));
+        const fDir = dirs[forceDirKey]||hDir;
+        const Fap  = vscale(fDir, bilateral ? wF*0.5 : wF);
+        topM = vadd(topM, vcross(vsub(r_ap, r_L5S1), Fap));
+      };
+      if (doRight) addHandMoment('Right');
+      if (doLeft)  addHandMoment('Left');
+    }
+    const M_L5S1_top = vneg(topM);
+
+    // FE ≈ M_Y (sagittal), LB ≈ M_X (frontal), AR ≈ M_Z (transverse), mag = resultant
+    const fmt = M => ({
+      FE: +M[1].toFixed(1), LB: +M[0].toFixed(1), AR: +M[2].toFixed(1),
+      mag: +Math.sqrt(M[0]*M[0]+M[1]*M[1]+M[2]*M[2]).toFixed(1),
+    });
 
     results.push({
-      t:     +t.toFixed(3),
-      L5S1:  fmt(M_L5S1),
+      t:           +t.toFixed(3),
+      L5S1_bottom: fmt(M_L5S1),
+      L5S1_top:    fmt(M_L5S1_top),
       ...(doRight ? { shoulderR: fmt(armSolve('Right') || [0,0,0]) } : {}),
       ...(doLeft  ? { shoulderL: fmt(armSolve('Left')  || [0,0,0]) } : {}),
     });
@@ -458,7 +494,9 @@ const Spinner = ({size=24,color=C.accent}) => (
 );
 
 const FileBar = ({job, onUpload, onRemove}) => {
+  const [open, setOpen] = useState(false);
   if (!job) return null;
+  const nM = job.mvnxFiles?.length||0, nL = job.loadsolFiles?.length||0, nF = job.forceFiles?.length||0;
   const Chip = ({color,label,onX,onAdd}) => (
     <div onClick={onAdd} style={{
       display:"flex",alignItems:"center",gap:5,fontSize:11,padding:"3px 9px",
@@ -472,21 +510,35 @@ const FileBar = ({job, onUpload, onRemove}) => {
     </div>
   );
   return (
-    <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap",alignItems:"center",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px"}}>
-      <span style={{fontSize:11,color:C.muted,marginRight:2}}>Files:</span>
-      {job.mvnxFiles.map((f,i)=>(
-        <Chip key={i} color={C.teal} label={f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}
-          onX={()=>onRemove("mvnx",i)}/>
-      ))}
-      <Chip color={C.teal} label="+ MVNX" onAdd={()=>onUpload("mvnx")}/>
-      {(job.loadsolFiles||[]).map((f,i)=>(
-        <Chip key={i} color={C.sky} label={f.name} onX={()=>onRemove("loadsol",i)}/>
-      ))}
-      <Chip color={C.sky} label="+ LoadSOL" onAdd={()=>onUpload("loadsol")}/>
-      {(job.forceFiles||[]).map((f,i)=>(
-        <Chip key={i} color={C.violet} label={f.name} onX={()=>onRemove("force",i)}/>
-      ))}
-      <Chip color={C.violet} label="+ Force CSV" onAdd={()=>onUpload("force")}/>
+    <div style={{marginBottom:14}}>
+      <button onClick={()=>setOpen(v=>!v)} style={{
+        display:"flex",alignItems:"center",gap:8,width:"100%",textAlign:"left",
+        background:C.card,border:`1px solid ${C.border}`,borderRadius:open?"8px 8px 0 0":8,
+        padding:"6px 12px",cursor:"pointer",color:C.muted,fontSize:11}}>
+        <span style={{fontSize:9}}>{open?"▼":"▶"}</span>
+        <span style={{fontWeight:500,color:C.text}}>Files</span>
+        <span style={{opacity:.6}}>{nM} MVNX · {nL} LoadSOL · {nF} WiDACS</span>
+        <span style={{marginLeft:"auto",fontSize:10,color:C.accent}}>{open?"hide":"manage"}</span>
+      </button>
+      {open&&(
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",
+          background:C.card,border:`1px solid ${C.border}`,borderTop:"none",
+          borderRadius:"0 0 8px 8px",padding:"8px 12px"}}>
+          {job.mvnxFiles.map((f,i)=>(
+            <Chip key={i} color={C.teal} label={f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}
+              onX={()=>onRemove("mvnx",i)}/>
+          ))}
+          <Chip color={C.teal} label="+ MVNX" onAdd={()=>onUpload("mvnx")}/>
+          {(job.loadsolFiles||[]).map((f,i)=>(
+            <Chip key={i} color={C.sky} label={f.name} onX={()=>onRemove("loadsol",i)}/>
+          ))}
+          <Chip color={C.sky} label="+ LoadSOL" onAdd={()=>onUpload("loadsol")}/>
+          {(job.forceFiles||[]).map((f,i)=>(
+            <Chip key={i} color={C.violet} label={f.name} onX={()=>onRemove("force",i)}/>
+          ))}
+          <Chip color={C.violet} label="+ Force CSV" onAdd={()=>onUpload("force")}/>
+        </div>
+      )}
     </div>
   );
 };
@@ -638,7 +690,8 @@ function Dashboard({ session }) {
 
   // Forces / settings
   const [forceBlocks,    setForceBlocks]    = useState([]); // kept for DB compat, UI removed
-  const [showTriggerCh,  setShowTriggerCh]  = useState(false);
+  const [showTriggerCh,    setShowTriggerCh]    = useState(false);
+  const [showMomComponents,setShowMomComponents] = useState(false);
 
   const fileInputRef       = useRef();
   const loadedJobsRef      = useRef(new Set());
@@ -1041,7 +1094,8 @@ function Dashboard({ session }) {
   const invDynData = useMemo(() => {
     const fd       = activeEvForDyn?.data || activeForce?.data;
     const fDir     = activeEvForDyn?.dirKey || forceDirKey;
-    const fOff     = activeEvForDyn ? 0 : forceOffset;
+    // Auto-sync: use LoadSOL blip time as the WiDACS→XSENS offset when available
+    const fOff     = activeEvForDyn ? 0 : (activeLsf?.blipTime ?? forceOffset);
     const handSide = activeEvForDyn?.hand || 'right';
     return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, fd, fOff, fDir, handSide);
   }, [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey, activeEvForDyn]); // eslint-disable-line
@@ -1888,18 +1942,24 @@ function Dashboard({ session }) {
   const renderForces = () => {
     const ff         = activeForce;
     const forceFiles = activeJob?.forceFiles || [];
+    const mvnxFiles  = activeJob?.mvnxFiles  || [];
     const hasMvnx    = !!activeSkelMvnx?.frames?.length;
     const hasLS      = !!clippedLsf?.length;
     const hasF       = !!ff?.data?.length;
     const hasData    = invDynData?.length > 0;
     if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
 
-    const JointChart = ({title, dataKey}) => {
-      const d = invDynData?.map(r => ({t:r.t, FE:r[dataKey]?.FE, LB:r[dataKey]?.LB, AR:r[dataKey]?.AR})) || [];
-      if (!d.length || !d.some(r => r.FE != null)) return null;
-      const peakFE = Math.max(...d.map(r => Math.abs(r.FE||0)));
+    // JointChart: shows resultant magnitude by default, FE/LB/AR when showMomComponents
+    const JointChart = ({title, dataKey, color=C.accent}) => {
+      const d = invDynData?.map(r => {
+        const v = r[dataKey];
+        if (!v) return null;
+        return { t: r.t, mag: v.mag, FE: v.FE, LB: v.LB, AR: v.AR };
+      }).filter(Boolean) || [];
+      if (!d.length) return null;
+      const peakMag = Math.max(...d.map(r => r.mag||0));
       return (
-        <ChartCard title={<span>{title}<span style={{fontSize:10,color:C.muted,marginLeft:6}}>peak FE {peakFE.toFixed(0)} Nm</span></span>} h={180}>
+        <ChartCard title={<span>{title}<span style={{fontSize:10,color:C.muted,marginLeft:6}}>peak {peakMag.toFixed(0)} Nm</span></span>} h={190}>
           <ResponsiveContainer>
             <LineChart data={d}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
@@ -1907,10 +1967,16 @@ function Dashboard({ session }) {
               <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="Nm"/>
               <Tooltip content={Tt}/>
               <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
-              <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE"/>
-              <Line type="monotone" dataKey="LB" stroke={C.amber} dot={false} strokeWidth={1.5} name="LB"/>
-              <Line type="monotone" dataKey="AR" stroke={C.rose}  dot={false} strokeWidth={1.5} name="AR"/>
-              <Legend wrapperStyle={{fontSize:10}}/>
+              {showMomComponents ? (
+                <>
+                  <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE (flex/ext)"/>
+                  <Line type="monotone" dataKey="LB" stroke={C.amber} dot={false} strokeWidth={1.5} name="LB (lat bend)"/>
+                  <Line type="monotone" dataKey="AR" stroke={C.rose}  dot={false} strokeWidth={1.5} name="AR (axial rot)"/>
+                  <Legend wrapperStyle={{fontSize:9}}/>
+                </>
+              ) : (
+                <Line type="monotone" dataKey="mag" stroke={color} dot={false} strokeWidth={2} name="Resultant"/>
+              )}
             </LineChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -1931,9 +1997,18 @@ function Dashboard({ session }) {
               style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.accent,fontSize:12}}/>
             <span style={{fontSize:12,color:C.muted}}>kg</span>
           </div>
+          {mvnxFiles.length > 1 && (
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:12,color:C.muted}}>MVNX:</span>
+              <select value={skelFileIdx} onChange={e=>setSkelFileIdx(+e.target.value)}
+                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
+                {mvnxFiles.map((f,i)=><option key={i} value={i}>{f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}</option>)}
+              </select>
+            </div>
+          )}
           {forceFiles.length > 1 && (
             <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.muted}}>WiDACS file:</span>
+              <span style={{fontSize:12,color:C.muted}}>WiDACS:</span>
               <select value={activeForceIdx} onChange={e=>setActiveForceIdx(+e.target.value)}
                 style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
                 {forceFiles.map((f,i)=><option key={i} value={i}>{f.name}</option>)}
@@ -1942,45 +2017,24 @@ function Dashboard({ session }) {
           )}
           <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
             {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"} · {hasF?"✓ WiDACS":"✗ WiDACS"}
+            {activeLsf?.blipTime!=null && <span style={{color:C.amber,marginLeft:6}}>⚡ synced to blip {activeLsf.blipTime.toFixed(2)}s</span>}
           </div>
         </div>
 
-        {/* WiDACS sync + chart */}
+        {/* WiDACS chart (no sync controls — auto-synced via blip) */}
         {hasF && (
-          <>
-            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,marginBottom:14}}>
-              <div style={{fontSize:12,fontWeight:600,color:C.accent,marginBottom:10,textTransform:"uppercase",letterSpacing:.5}}>WiDACS Time Sync</div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10,marginBottom:12}}>
-                <Stat label="Peak Force"   value={ff.stats.peak.toFixed(1)} unit="N"/>
-                <Stat label="Time to Peak" value={(ff.stats.peakTime+forceOffset).toFixed(3)} unit="s"/>
-                <Stat label="Impulse"      value={ff.stats.impulse} unit="N·s"/>
-                <Stat label="Offset"       value={forceOffset.toFixed(3)} unit="s"/>
-              </div>
-              <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-                <div style={{flex:1,minWidth:200}}>
-                  <input type="range" min={-120} max={120} step={0.01} value={forceOffset}
-                    onChange={e=>setForceOffset(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted}}>
-                    <span>−120s</span><span>offset: {forceOffset.toFixed(2)}s</span><span>+120s</span>
-                  </div>
-                </div>
-                {activeLsf?.blipTime && <Btn small onClick={()=>setForceOffset(activeLsf.blipTime)}>⚡ Snap to Blip ({activeLsf.blipTime.toFixed(2)}s)</Btn>}
-                <Btn small onClick={()=>setForceOffset(0)}>Reset</Btn>
-              </div>
-            </div>
-            <ChartCard title="WiDACS Force" h={220}>
-              <ResponsiveContainer>
-                <ComposedChart>
-                  <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                  <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
-                  <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
-                  <Tooltip content={Tt}/>
-                  <ReferenceLine y={ff.stats.peak} stroke={C.rose} strokeDasharray="3 3" opacity={0.4}/>
-                  <Line data={shiftedForce} type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Raw force"/>
-                </ComposedChart>
-              </ResponsiveContainer>
-            </ChartCard>
-          </>
+          <ChartCard title={<span>WiDACS Force<span style={{fontSize:10,color:C.muted,marginLeft:8}}>peak {ff.stats.peak.toFixed(1)} N · impulse {ff.stats.impulse} N·s</span></span>} h={200}>
+            <ResponsiveContainer>
+              <ComposedChart>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
+                <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
+                <Tooltip content={Tt}/>
+                <ReferenceLine y={ff.stats.peak} stroke={C.rose} strokeDasharray="3 3" opacity={0.4}/>
+                <Line data={shiftedForce} type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Raw force"/>
+              </ComposedChart>
+            </ResponsiveContainer>
+          </ChartCard>
         )}
         {!hasF && (
           <EmptyState icon="📈" title="No WiDACS data" detail="Upload a WiDACS CSV to enable shoulder moment calculation."
@@ -1992,41 +2046,76 @@ function Dashboard({ session }) {
           <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data to compute joint moments."/>
         ) : hasData ? (
           <>
-            <div style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",
-              letterSpacing:.5,margin:"18px 0 8px",borderBottom:`1px solid ${C.accent}40`,paddingBottom:5}}>
-              Joint Moments — Quasi-Static
+            <div style={{display:"flex",alignItems:"center",gap:12,margin:"18px 0 10px",
+              borderBottom:`1px solid ${C.accent}40`,paddingBottom:6}}>
+              <span style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>
+                Joint Moments — Quasi-Static
+              </span>
+              <button onClick={()=>setShowMomComponents(v=>!v)} style={{
+                marginLeft:"auto",background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+                padding:"3px 10px",color:showMomComponents?C.accent:C.muted,fontSize:11,cursor:"pointer"}}>
+                {showMomComponents ? "Show resultant" : "Show FE / LB / AR"}
+              </button>
             </div>
             {!hasLS && (
               <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
                 padding:"10px 14px",marginBottom:12,fontSize:12,color:C.amber}}>
-                No LoadSOL paired to this cycle — L5/S1 moment will be zero. Pair a LoadSOL in the Skeleton tab.
+                No LoadSOL paired to this cycle — bottom-up L5/S1 will be zero. Pair a LoadSOL in the Skeleton tab.
               </div>
             )}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
-              <JointChart title="L5/S1"          dataKey="L5S1"/>
-              <JointChart title="Right Shoulder"  dataKey="shoulderR"/>
-              <JointChart title="Left Shoulder"   dataKey="shoulderL"/>
+
+            {/* L5/S1 — two separate charts */}
+            <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>
+              L5/S1 Moment
             </div>
-            <div style={{marginTop:14,overflowX:"auto"}}>
+            <div style={{marginBottom:6,fontSize:11,color:C.muted,lineHeight:1.6}}>
+              <span style={{color:C.sky,fontWeight:600}}>Bottom-Up</span>
+              {" "}— GRF propagated upward through legs → pelvis → L5/S1 (requires LoadSOL).{"  "}
+              <span style={{color:C.violet,fontWeight:600}}>Top-Down</span>
+              {" "}— weight of all segments above L5/S1 + WiDACS hand force, moment arm about L5/S1 (requires WiDACS + MVNX posture).
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14,marginBottom:18}}>
+              <JointChart title="L5/S1 — Bottom-Up (via LoadSOL)" dataKey="L5S1_bottom" color={C.sky}/>
+              <JointChart title="L5/S1 — Top-Down (via WiDACS + trunk weight)" dataKey="L5S1_top" color={C.violet}/>
+            </div>
+
+            {/* Shoulder moments */}
+            <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>
+              Shoulder Moments (Top-Down via WiDACS)
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+              <JointChart title="Right Shoulder" dataKey="shoulderR" color={C.amber}/>
+              <JointChart title="Left Shoulder"  dataKey="shoulderL" color={C.emerald}/>
+            </div>
+
+            {/* Peak table */}
+            <div style={{marginTop:18,overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
                 <thead>
                   <tr style={{borderBottom:`1px solid ${C.border}`}}>
-                    {["Joint","Peak FE (Nm)","Peak LB (Nm)","Peak AR (Nm)"].map(h=>(
+                    {["Joint","Method","Peak (Nm)",...(showMomComponents?["Peak FE","Peak LB","Peak AR"]:[])].map(h=>(
                       <th key={h} style={{textAlign:"left",padding:"5px 10px",color:C.muted,fontWeight:600}}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {[{label:"L5/S1",key:"L5S1"},{label:"R Shoulder",key:"shoulderR"},{label:"L Shoulder",key:"shoulderL"}].map(({label,key}) => {
+                  {[
+                    {label:"L5/S1",      key:"L5S1_bottom", method:"Bottom-Up (LoadSOL)"},
+                    {label:"L5/S1",      key:"L5S1_top",    method:"Top-Down (WiDACS)"},
+                    {label:"R Shoulder", key:"shoulderR",   method:"Top-Down (WiDACS)"},
+                    {label:"L Shoulder", key:"shoulderL",   method:"Top-Down (WiDACS)"},
+                  ].map(({label,key,method}) => {
                     const d = invDynData.map(r => r[key]).filter(Boolean);
                     if (!d.length) return null;
                     const pk = c => Math.max(...d.map(r => Math.abs(r[c]||0))).toFixed(1);
                     return (
-                      <tr key={key} style={{borderBottom:`1px solid ${C.border}20`}}>
+                      <tr key={key+method} style={{borderBottom:`1px solid ${C.border}20`}}>
                         <td style={{padding:"5px 10px",color:C.text,fontWeight:500}}>{label}</td>
-                        <td style={{padding:"5px 10px",color:C.teal}}>{pk("FE")}</td>
-                        <td style={{padding:"5px 10px",color:C.amber}}>{pk("LB")}</td>
-                        <td style={{padding:"5px 10px",color:C.rose}}>{pk("AR")}</td>
+                        <td style={{padding:"5px 10px",color:C.muted,fontSize:10}}>{method}</td>
+                        <td style={{padding:"5px 10px",color:C.accent,fontWeight:600}}>{pk("mag")}</td>
+                        {showMomComponents&&<td style={{padding:"5px 10px",color:C.teal}}>{pk("FE")}</td>}
+                        {showMomComponents&&<td style={{padding:"5px 10px",color:C.amber}}>{pk("LB")}</td>}
+                        {showMomComponents&&<td style={{padding:"5px 10px",color:C.rose}}>{pk("AR")}</td>}
                       </tr>
                     );
                   })}
