@@ -813,23 +813,31 @@ function Dashboard({ session }) {
   // ── Auto-save settings when they change ──────────────────────────────────
   useEffect(() => {
     if (!activeJobId || !readyToSaveRef.current) return;
-    const timer = setTimeout(() => {
-      supabase.from("job_settings").upsert({
-        job_id: activeJobId,
+    const timer = setTimeout(async () => {
+      const payload = {
         extend_duration: extendDuration,
         force_blocks: { blocks: forceBlocks, events: forceEvents, fileSets: forceFileSets },
         joint_panels: jointPanels,
         loadsol_pairings: loadsolPairings,
         body_mass: bodyMass,
         updated_at: new Date().toISOString(),
-      }, { onConflict: "job_id" }).then(({ error }) => {
-        if (error) {
-          console.error("[biomechanics] settings save failed:", error.message, error.details);
-          setSaveError(error.message);
-        } else {
-          setSaveError(null);
+      };
+      // Try update first; if no row exists yet, insert
+      const { data: updated, error: updateErr } = await supabase
+        .from("job_settings").update(payload).eq("job_id", activeJobId).select("job_id");
+      if (updateErr) {
+        console.error("[biomechanics] settings save failed:", updateErr.message);
+        setSaveError(updateErr.message); return;
+      }
+      if (!updated?.length) {
+        const { error: insertErr } = await supabase
+          .from("job_settings").insert({ job_id: activeJobId, ...payload });
+        if (insertErr) {
+          console.error("[biomechanics] settings insert failed:", insertErr.message);
+          setSaveError(insertErr.message); return;
         }
-      });
+      }
+      setSaveError(null);
     }, 1500);
     return () => clearTimeout(timer);
   }, [activeJobId, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets, forceEvents]); // eslint-disable-line
@@ -2329,7 +2337,9 @@ ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS force_blocks jsonb DEFAULT '[]
 ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS joint_panels jsonb DEFAULT '[]';
 ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS loadsol_pairings jsonb DEFAULT '{}';
 ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS body_mass numeric DEFAULT 75;
-ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS updated_at timestamptz;`}</pre>
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS updated_at timestamptz;
+-- ensure job_id is unique so saves work correctly:
+ALTER TABLE job_settings ADD CONSTRAINT job_settings_job_id_key UNIQUE (job_id);`}</pre>
         </div>
       )}
       <div style={{display:"flex",gap:4,padding:"10px 24px",borderBottom:`1px solid ${C.border}`,background:C.card,overflowX:"auto"}}>
