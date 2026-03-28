@@ -327,38 +327,6 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
       return u.M;
     };
 
-    // ── Top-down L5/S1: sum moments of all segments above L5/S1 about r_L5S1 ──
-    // M_L5S1_top = -[ Σ(r_com_i − r_L5S1)×W_i + Σ(r_app_hand − r_L5S1)×F_hand ]
-    const ABOVE_L5S1 = ['L5','L3','T12','T8','Neck','Head',
-      'RightShoulder','LeftShoulder','RightUpperArm','LeftUpperArm',
-      'RightForearm','LeftForearm','RightHand','LeftHand'];
-    let topM = [0,0,0];
-    for (const seg of ABOVE_L5S1) {
-      const idx = si[seg]; if (idx == null) continue;
-      const [mf,cf] = WINTER[seg]||[0.001,0.5];
-      const r_p = vget(frame.pos, idx);
-      const dSeg = SEG_DISTAL[seg];
-      const r_d  = dSeg&&si[dSeg]!=null ? vget(frame.pos,si[dSeg]) : r_p;
-      const r_c  = vadd(r_p, vscale(vsub(r_d,r_p),cf));
-      topM = vadd(topM, vcross(vsub(r_c, r_L5S1), vscale(G, mf*bodyMass)));
-    }
-    if (forceData?.length) {
-      const addHandMoment = (cap) => {
-        const hi = si[`${cap}Hand`]; if (hi==null) return;
-        const r_w  = vget(frame.pos, hi);
-        const fi2  = si[`${cap}Forearm`]!=null ? si[`${cap}Forearm`] : si[`${cap}UpperArm`];
-        const r_e  = fi2!=null ? vget(frame.pos,fi2) : r_w;
-        const hDir = vnorm(vsub(r_w,r_e));
-        const r_ap = vadd(r_w, vscale(hDir,0.10));
-        const fDir = dirs[forceDirKey]||hDir;
-        const Fap  = vscale(fDir, bilateral ? wF*0.5 : wF);
-        topM = vadd(topM, vcross(vsub(r_ap, r_L5S1), Fap));
-      };
-      if (doRight) addHandMoment('Right');
-      if (doLeft)  addHandMoment('Left');
-    }
-    const M_L5S1_top = vneg(topM);
-
     // FE ≈ M_Y (sagittal), LB ≈ M_X (frontal), AR ≈ M_Z (transverse), mag = resultant
     const fmt = M => ({
       FE: +M[1].toFixed(1), LB: +M[0].toFixed(1), AR: +M[2].toFixed(1),
@@ -366,9 +334,8 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
     });
 
     results.push({
-      t:           +t.toFixed(3),
-      L5S1_bottom: fmt(M_L5S1),
-      L5S1_top:    fmt(M_L5S1_top),
+      t:        +t.toFixed(3),
+      L5S1:     fmt(M_L5S1),
       ...(doRight ? { shoulderR: fmt(armSolve('Right') || [0,0,0]) } : {}),
       ...(doLeft  ? { shoulderL: fmt(armSolve('Left')  || [0,0,0]) } : {}),
     });
@@ -1056,6 +1023,17 @@ function Dashboard({ session }) {
   // Memoised joint panel data — only recomputes when panels or MVNX file changes,
   // NOT on every skelFrame tick. This prevents Recharts from reinitialising every frame.
   const activeSkelMvnx = activeJob?.mvnxFiles?.[skelFileIdx];
+
+  // Component-level force event accessors for the active MVNX file (used by both Skeleton and Forces tabs)
+  const mvnxKey = activeSkelMvnx?.storagePath || '__default__';
+  const curEvs  = forceEvents[mvnxKey] || [];
+  const setCurEvs = updater => setForceEvents(prev => ({
+    ...prev,
+    [mvnxKey]: typeof updater === 'function' ? updater(prev[mvnxKey] || []) : updater,
+  }));
+  const activeEvent   = curEvs.find(e => e.id === activeEventId) || null;
+  const averagedEvData = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
+  const forceFilesList = activeJob?.forceFiles || [];
   const panelData = useMemo(() => {
     const mvnx = activeSkelMvnx;
     if (!mvnx?.frames?.length) return jointPanels.map(() => []);
@@ -1124,6 +1102,282 @@ function Dashboard({ session }) {
     return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, fd, fOff, fDir, handSide);
   }, [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey, activeEvForDyn]); // eslint-disable-line
 
+  // ── Shared constants ─────────────────────────────────────────────────────────
+  const TYPE_OPTS = ['push','lift','pinch','pull','carry'];
+  const HAND_OPTS = [{v:'right',l:'Right'},{v:'left',l:'Left'},{v:'bilateral',l:'Both'}];
+  const DIR_OPTS  = [
+    {v:'auto',l:'Auto (hand axis)'},{v:'+x',l:'Forward (+X)'},{v:'-x',l:'Backward (−X)'},
+    {v:'+y',l:'Left (+Y)'},{v:'-y',l:'Right (−Y)'},{v:'+z',l:'Up (+Z)'},{v:'-z',l:'Down (−Z)'},
+  ];
+
+  // ── Skeleton viewer core (SVG + playback controls) — used by Skeleton & Forces tabs ──
+  const renderSkeletonCore = ({showForcePanelToggle=true}={}) => {
+    const mvnx   = activeSkelMvnx;
+    const hasData = !!mvnx?.frames?.length;
+    const frame  = hasData ? mvnx.frames[Math.min(skelFrame, mvnx.frames.length-1)] : null;
+    const positions = frame?.pos?.length ? frame.pos : REF_POS;
+    const boneList  = mvnx?.bones?.length ? mvnx.bones : BONES;
+    const W=300, H=420;
+    const pts = projectPos(positions, skelView, W, H);
+    const ft  = frame?.time || 0;
+
+    return (
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14}}>
+        <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:10}}>
+          {["front","side","top"].map(v=>(
+            <Btn key={v} active={skelView===v} small onClick={()=>setSkelView(v)}>{v[0].toUpperCase()+v.slice(1)}</Btn>
+          ))}
+        </div>
+        <svg width={W} height={H} style={{display:"block",margin:"0 auto"}}>
+          <rect width={W} height={H} fill={C.bg} rx={8}/>
+          {[0.25,0.5,0.75].map(p=>(
+            <line key={p} x1={0} y1={H*p} x2={W} y2={H*p} stroke={C.border} strokeWidth={0.5} strokeDasharray="4 4"/>
+          ))}
+          {pts.length>0&&boneList.map(([a,b],i)=>{
+            const pa=pts[a],pb=pts[b]; if(!pa||!pb) return null;
+            const la=mvnx?.segLabels?.[a]||"",lb=mvnx?.segLabels?.[b]||"";
+            const isR=/right/i.test(la)||/right/i.test(lb);
+            const isL=/left/i.test(la)||/left/i.test(lb);
+            return <line key={i} x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]}
+              stroke={isR?C.sky:isL?C.rose:C.amber} strokeWidth={isR||isL?3:4} strokeLinecap="round"/>;
+          })}
+          {pts.map((pt,i)=>{
+            if(!pt) return null;
+            const lbl=mvnx?.segLabels?.[i]||"";
+            return <circle key={i} cx={pt[0]} cy={pt[1]} r={/head/i.test(lbl)?7:4}
+              fill={/head/i.test(lbl)?C.amber:C.accent} opacity={0.9}/>;
+          })}
+          {/* Force arrows */}
+          {(()=>{
+            if(!curEvs.length) return null;
+            const arrows=[], segLabels=mvnx?.segLabels||[];
+            const rHi=segLabels.findIndex(l=>/right.*hand|hand.*right/i.test(l));
+            const lHi=segLabels.findIndex(l=>/left.*hand|hand.*left/i.test(l));
+            curEvs.forEach(ev=>{
+              if(!ev.fileIndices?.length) return;
+              const avgData=allEvAveraged[ev.id]||[];
+              if(!avgData.length) return;
+              const localT=ft-(ev.tStart||0);
+              if(localT<0||localT>avgData[avgData.length-1].time+0.5) return;
+              let forceMag=0;
+              if(localT<=avgData[0].time) forceMag=avgData[0].force;
+              else if(localT>=avgData[avgData.length-1].time) forceMag=avgData[avgData.length-1].force;
+              else { for(let k=0;k<avgData.length-1;k++){if(localT>=avgData[k].time&&localT<=avgData[k+1].time){const frac=(localT-avgData[k].time)/(avgData[k+1].time-avgData[k].time);forceMag=avgData[k].force+frac*(avgData[k+1].force-avgData[k].force);break;}}}
+              if(forceMag<1) return;
+              const peakForce=Math.max(...avgData.map(d=>d.force),1);
+              const arrowLen=Math.max(12,(forceMag/peakForce)*70);
+              const dirKey=ev.direction||'auto';
+              let svgDir=null;
+              if(dirKey!=='auto'&&DIR_SVG[dirKey]){const vec=DIR_SVG[dirKey][skelView]||[0,-1];const m=Math.sqrt(vec[0]**2+vec[1]**2)||1;svgDir=[vec[0]/m,vec[1]/m];}
+              const hands=ev.hand==='bilateral'?[rHi,lHi]:ev.hand==='left'?[lHi]:[rHi];
+              hands.forEach((hIdx,hi)=>{
+                if(hIdx<0||!pts[hIdx]) return;
+                const[hx,hy]=pts[hIdx];
+                let dx=0,dy=-1;
+                if(!svgDir){const isRight=ev.hand==='right'||(ev.hand==='bilateral'&&hi===0);const fIdx=segLabels.findIndex(l=>isRight?/right.*(forearm|lowerarm|wrist)/i.test(l):/left.*(forearm|lowerarm|wrist)/i.test(l));if(fIdx>=0&&pts[fIdx]){const[fx,fy]=pts[fIdx];const rm=Math.sqrt((hx-fx)**2+(hy-fy)**2)||1;dx=(hx-fx)/rm;dy=(hy-fy)/rm;}}else[dx,dy]=svgDir;
+                const tipX=hx+dx*arrowLen,tipY=hy+dy*arrowLen;
+                const hl=8,ang=Math.atan2(dy,dx);
+                const color=ev.hand==='left'||(ev.hand==='bilateral'&&hi===1)?"#4ade80":"#fbbf24";
+                arrows.push(<g key={`arr-${ev.id}-${hi}`}>
+                  <line x1={hx} y1={hy} x2={tipX} y2={tipY} stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
+                  <line x1={tipX} y1={tipY} x2={tipX-hl*Math.cos(ang-0.5)} y2={tipY-hl*Math.sin(ang-0.5)} stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
+                  <line x1={tipX} y1={tipY} x2={tipX-hl*Math.cos(ang+0.5)} y2={tipY-hl*Math.sin(ang+0.5)} stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
+                  <text x={tipX+dx*4} y={tipY+dy*4+4} fill={color} fontSize={9} textAnchor="middle" fontWeight="bold">{forceMag.toFixed(0)}N</text>
+                </g>);
+              });
+            });
+            return arrows;
+          })()}
+          {!hasData&&<text x={W/2} y={H-16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose — upload MVNX</text>}
+        </svg>
+        {hasData ? (
+          <div style={{marginTop:10}}>
+            <div style={{display:"flex",gap:5,justifyContent:"center",marginBottom:6,flexWrap:"wrap"}}>
+              <Btn small onClick={()=>{setSkelFrame(0);setSkelPlaying(false);}}>⏮</Btn>
+              <Btn small active={skelPlaying} onClick={()=>setSkelPlaying(p=>!p)}>{skelPlaying?"⏸":"▶"}</Btn>
+              <Btn small onClick={()=>{setSkelPlaying(false);setSkelFrame(mvnx.frames.length-1);}}>⏭</Btn>
+              {[0.25,0.5,1,2,4].map(s=>(
+                <Btn key={s} small active={skelSpeed===s} onClick={()=>setSkelSpeed(s)}>{s}×</Btn>
+              ))}
+            </div>
+            <input type="range" min={0} max={mvnx.frames.length-1} value={skelFrame}
+              onChange={e=>setSkelFrame(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted,marginTop:3}}>
+              <span>t={ft.toFixed(2)}s</span>
+              <span>{skelFrame+1}/{mvnx.frames.length}</span>
+              <span>{mvnx.duration?.toFixed(1)}s@{mvnx.frameRate}Hz</span>
+            </div>
+          </div>
+        ) : (
+          <div style={{textAlign:"center",marginTop:14}}>
+            <Btn active onClick={()=>openUpload("mvnx")}>Upload MVNX</Btn>
+          </div>
+        )}
+        {showForcePanelToggle&&(
+          <div style={{marginTop:12,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
+            <Btn active={showForcePanel} onClick={()=>setShowForcePanel(p=>!p)}
+              style={{width:"100%",justifyContent:"center",textAlign:"center"}}>
+              {showForcePanel?"✕ Close Force Panel":"⚡ Force Events"}
+            </Btn>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Force event panel — used by Skeleton & Forces tabs ────────────────────
+  const renderForcePanel = () => {
+    const updateEvent = (patch) => setCurEvs(prev =>
+      prev.map(e => e.id === activeEventId ? {...e, ...patch} : e));
+    const handleChartDblClick = (e) => {
+      if(!activeEvent||!averagedEvData.length) return;
+      const container=fpChartRef.current; if(!container) return;
+      const rect=container.getBoundingClientRect();
+      const plotLeft=52,plotWidth=rect.width-8-plotLeft;
+      const domainMax=averagedEvData[averagedEvData.length-1]?.time||1;
+      const xFrac=Math.max(0,Math.min(1,(e.clientX-rect.left-plotLeft)/plotWidth));
+      const t=+(xFrac*domainMax).toFixed(3);
+      const near=averagedEvData.reduce((best,d)=>Math.abs(d.time-t)<Math.abs(best.time-t)?d:best,averagedEvData[0]);
+      setPlateauModal({t:near.time,f:near.force,durStr:activeEvent.plateauDur>0?String(activeEvent.plateauDur):'1'});
+    };
+    const validTrials=(activeEvent?.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
+    const stride=Math.max(1,Math.floor(averagedEvData.length/400));
+    const displayData=averagedEvData.filter((_,i)=>i%stride===0);
+
+    return (
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,
+        display:"flex",flexDirection:"column",gap:10,overflow:"auto",maxHeight:"calc(100vh - 200px)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>Force Events</div>
+          <Btn small active onClick={()=>{
+            const id=`ev_${Date.now()}`;
+            const newEv={id,label:`Event ${curEvs.length+1}`,type:'push',hand:'right',
+              direction:'auto',tStart:0,fileIndices:[],stopAt:null,plateauT:null,plateauF:null,plateauDur:0};
+            setCurEvs(prev=>[...prev,newEv]);
+            setActiveEventId(id);
+          }}>+ New</Btn>
+        </div>
+        {curEvs.length===0&&(
+          <div style={{fontSize:11,color:C.muted,padding:"10px 0",textAlign:"center"}}>No events yet — click + New to create one.</div>
+        )}
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {curEvs.map(ev=>{
+            const nTrials=(ev.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
+            const isActive=ev.id===activeEventId;
+            return (
+              <div key={ev.id} onClick={()=>setActiveEventId(ev.id)} style={{
+                display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,cursor:"pointer",
+                background:isActive?C.accent+"18":"transparent",border:`1px solid ${isActive?C.accent:C.border}`}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12,fontWeight:isActive?600:400,color:isActive?C.accent:C.text,
+                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ev.label}</div>
+                  <div style={{fontSize:10,color:C.muted}}>{ev.type} · {ev.hand} · {nTrials} trial{nTrials!==1?'s':''}</div>
+                </div>
+                <Btn small danger onClick={e=>{e.stopPropagation();
+                  setCurEvs(prev=>prev.filter(x=>x.id!==ev.id));
+                  if(activeEventId===ev.id) setActiveEventId(null);
+                }}>×</Btn>
+              </div>
+            );
+          })}
+        </div>
+        {activeEvent&&(
+          <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,display:"flex",flexDirection:"column",gap:8}}>
+            <input value={activeEvent.label} onChange={e=>updateEvent({label:e.target.value})}
+              style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 10px",
+                color:C.text,fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {TYPE_OPTS.map(t=>(
+                <Btn key={t} small active={activeEvent.type===t} onClick={()=>updateEvent({type:t})}>{t}</Btn>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted,minWidth:36}}>Hand:</span>
+              {HAND_OPTS.map(({v,l})=>(
+                <Btn key={v} small active={activeEvent.hand===v} onClick={()=>updateEvent({hand:v})}>{l}</Btn>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted,minWidth:36}}>Dir:</span>
+              <select value={activeEvent.direction||'auto'} onChange={e=>updateEvent({direction:e.target.value})}
+                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11,flex:1}}>
+                {DIR_OPTS.map(({v,l})=><option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted,minWidth:36}}>Start:</span>
+              <input type="number" step="0.01" value={activeEvent.tStart??0}
+                onChange={e=>updateEvent({tStart:parseFloat(e.target.value)||0})}
+                style={{width:70,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
+                  padding:"3px 8px",color:C.accent,fontSize:11}}/>
+              <span style={{fontSize:11,color:C.muted}}>s</span>
+            </div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:2}}>Trials (WiDACS files):</div>
+            <div style={{display:"flex",flexDirection:"column",gap:3}}>
+              {forceFilesList.map((f,fi)=>{
+                const sel=(activeEvent.fileIndices||[]).includes(fi);
+                return (
+                  <div key={fi} onClick={()=>updateEvent({fileIndices:sel?(activeEvent.fileIndices||[]).filter(x=>x!==fi):[...(activeEvent.fileIndices||[]),fi]})}
+                    style={{display:"flex",alignItems:"center",gap:7,padding:"4px 8px",borderRadius:5,cursor:"pointer",
+                      background:sel?C.violet+"20":"transparent",border:`1px solid ${sel?C.violet:C.border}`}}>
+                    <span style={{fontSize:10,color:sel?C.violet:C.muted}}>{sel?"✓":"○"}</span>
+                    <span style={{fontSize:11,color:sel?C.text:C.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</span>
+                  </div>
+                );
+              })}
+              {forceFilesList.length===0&&<div style={{fontSize:11,color:C.muted,fontStyle:"italic"}}>No WiDACS files uploaded yet.</div>}
+            </div>
+            {validTrials>0&&(
+              <>
+                <div ref={fpChartRef} style={{height:120}} onDoubleClick={handleChartDblClick}>
+                  <ResponsiveContainer>
+                    <LineChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                      <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                      <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
+                      <Tooltip content={Tt}/>
+                      <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Avg force"/>
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                {validTrials>1&&(()=>{
+                  const traces=(activeEvent.fileIndices||[]).filter(fi=>fi<forceFilesList.length)
+                    .map((fi,i)=>{const f=forceFilesList[fi];if(!f?.data)return null;const s=Math.max(1,Math.floor(f.data.length/200));return{data:f.data.filter((_,j)=>j%s===0),color:CYCLE_COLORS[i%CYCLE_COLORS.length]};}).filter(Boolean);
+                  return (<div style={{height:60,marginTop:4}}><ResponsiveContainer>
+                    <LineChart margin={{left:0,right:8,top:2,bottom:0}}>
+                      <XAxis type="number" dataKey="time" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="s"/>
+                      <YAxis tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="N" width={44}/>
+                      {traces.map((tr,i)=><Line key={i} data={tr.data} type="monotone" dataKey="force" stroke={tr.color} dot={false} strokeWidth={1} opacity={0.5} name={`T${i+1}`}/>)}
+                    </LineChart>
+                  </ResponsiveContainer></div>);
+                })()}
+              </>
+            )}
+          </div>
+        )}
+        {plateauModal&&activeEvent&&(
+          <div style={{position:"fixed",inset:0,background:"#00000080",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}}
+            onClick={()=>setPlateauModal(null)}>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:24,width:320}} onClick={e=>e.stopPropagation()}>
+              <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>Extend Plateau</div>
+              <div style={{fontSize:12,color:C.muted,marginBottom:14}}>
+                At <b style={{color:C.accent}}>{plateauModal.t.toFixed(3)}s</b>, force = <b style={{color:C.violet}}>{plateauModal.f.toFixed(1)} N</b>
+              </div>
+              <input type="number" step="0.1" min={0} autoFocus value={plateauModal.durStr}
+                onChange={e=>setPlateauModal(m=>({...m,durStr:e.target.value}))}
+                onKeyDown={e=>{if(e.key==='Enter'){const v=parseFloat(plateauModal.durStr);if(!isNaN(v)&&v>0){setCurEvs(prev=>prev.map(ev=>ev.id===activeEventId?{...ev,plateauT:plateauModal.t,plateauF:plateauModal.f,plateauDur:v}:ev));setPlateauModal(null);}}if(e.key==='Escape')setPlateauModal(null);}}
+                style={{width:"100%",background:C.bg,border:`1px solid ${C.accent}`,borderRadius:6,padding:"8px 12px",color:C.text,fontSize:14,boxSizing:"border-box",outline:"none",marginBottom:16}}/>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                <Btn small onClick={()=>setPlateauModal(null)}>Cancel</Btn>
+                <Btn small active onClick={()=>{const v=parseFloat(plateauModal.durStr);if(!isNaN(v)&&v>0){setCurEvs(prev=>prev.map(ev=>ev.id===activeEventId?{...ev,plateauT:plateauModal.t,plateauF:plateauModal.f,plateauDur:v}:ev));setPlateauModal(null);}}}>Apply</Btn>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // ════════════════════════════════════════════════════════════════════════════
   //  TAB 0 — SKELETON (merged with overview)
   // ════════════════════════════════════════════════════════════════════════════
@@ -1132,10 +1386,6 @@ function Dashboard({ session }) {
     const mvnx  = mvnxFiles[skelFileIdx];
     const hasData = !!mvnx?.frames?.length;
     const frame = hasData ? mvnx.frames[Math.min(skelFrame, mvnx.frames.length-1)] : null;
-    const positions = frame?.pos?.length ? frame.pos : REF_POS;
-    const boneList  = mvnx?.bones?.length ? mvnx.bones : BONES;
-    const W=300, H=420;
-    const pts = projectPos(positions, skelView, W, H);
     const ft = frame?.time || 0;
 
     const loadsolFilesList = activeJob?.loadsolFiles || [];
@@ -1145,23 +1395,7 @@ function Dashboard({ session }) {
     const lsf = (lsfIdx != null) ? (loadsolFilesList[lsfIdx] ?? null) : null;
     const hasLS = !!lsf?.data?.length;
 
-    const forceFilesList = activeJob?.forceFiles || [];
     const blipTime = lsf?.blipTime;
-
-    // Force events for this MVNX file
-    const mvnxKey = mvnx?.storagePath || '__default__';
-    const curEvs = forceEvents[mvnxKey] || [];
-    const setCurEvs = updater => setForceEvents(prev => ({
-      ...prev,
-      [mvnxKey]: typeof updater === 'function' ? updater(prev[mvnxKey] || []) : updater,
-    }));
-
-    // Active force event
-    const activeEvent = curEvs.find(e => e.id === activeEventId) || null;
-    const averagedData = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
-
-    const TYPE_OPTS = ['push','lift','pinch','pull','carry'];
-    const HAND_OPTS = [{v:'right',l:'Right'},{v:'left',l:'Left'},{v:'bilateral',l:'Both'}];
 
     if (filesLoading) return (
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:300,gap:14}}>
@@ -1169,276 +1403,6 @@ function Dashboard({ session }) {
       </div>
     );
 
-    // Direction options for force vector
-    const DIR_OPTS = [
-      {v:'auto',  l:'Auto (hand axis)'},
-      {v:'+x',    l:'Forward (+X)'},
-      {v:'-x',    l:'Backward (−X)'},
-      {v:'+y',    l:'Left (+Y)'},
-      {v:'-y',    l:'Right (−Y)'},
-      {v:'+z',    l:'Up (+Z)'},
-      {v:'-z',    l:'Down (−Z)'},
-    ];
-
-    // ── Force panel (right side when showForcePanel) ──────────────────────
-    const renderForcePanel = () => {
-      const updateEvent = (patch) => setCurEvs(prev =>
-        prev.map(e => e.id === activeEventId ? {...e, ...patch} : e));
-
-      // Double-click on chart → open plateau extension modal
-      const handleChartDblClick = (e) => {
-        if (!activeEvent || !averagedData.length) return;
-        const container = fpChartRef.current;
-        if (!container) return;
-        const rect = container.getBoundingClientRect();
-        const plotLeft = 52, plotWidth = rect.width - 8 - plotLeft;
-        const domainMax = averagedData[averagedData.length-1]?.time || 1;
-        const xFrac = Math.max(0, Math.min(1, (e.clientX - rect.left - plotLeft) / plotWidth));
-        const t = +(xFrac * domainMax).toFixed(3);
-        const near = averagedData.reduce((best, d) =>
-          Math.abs(d.time - t) < Math.abs(best.time - t) ? d : best, averagedData[0]);
-        setPlateauModal({t: near.time, f: near.force, durStr: activeEvent.plateauDur > 0 ? String(activeEvent.plateauDur) : '1'});
-      };
-
-      // Valid trial count (indices that actually exist in forceFilesList)
-      const validTrials = (activeEvent?.fileIndices||[]).filter(i => i < forceFilesList.length).length;
-
-      const avgForEvent = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
-      const stride = Math.max(1, Math.floor(avgForEvent.length / 400));
-      const displayData = avgForEvent.filter((_,i) => i % stride === 0);
-
-      return (
-        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,display:"flex",flexDirection:"column",gap:10,overflow:"auto",maxHeight:"calc(100vh - 200px)"}}>
-          {/* Header */}
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div style={{fontSize:13,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>Force Events</div>
-            <Btn small active onClick={()=>{
-              const id = `ev_${Date.now()}`;
-              const newEv = {id, label:`Event ${curEvs.length+1}`, type:'push', hand:'right',
-                direction:'auto', tStart:0, fileIndices:[], stopAt:null,
-                plateauT:null, plateauF:null, plateauDur:0};
-              setCurEvs(prev=>[...prev, newEv]);
-              setActiveEventId(id);
-            }}>+ New</Btn>
-          </div>
-
-          {/* Event list */}
-          {curEvs.length === 0 && (
-            <div style={{fontSize:11,color:C.muted,padding:"10px 0",textAlign:"center"}}>No events yet — click + New to create one.</div>
-          )}
-          <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            {curEvs.map(ev=>{
-              const nTrials = (ev.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
-              return (
-                <div key={ev.id} onClick={()=>setActiveEventId(ev.id)}
-                  style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,cursor:"pointer",
-                    background:activeEventId===ev.id ? C.accent+"18" : C.bg,
-                    border:`1px solid ${activeEventId===ev.id ? C.accent+"60" : C.border}`}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <span style={{fontSize:12,fontWeight:600,color:activeEventId===ev.id?C.accent:C.text}}>{ev.label}</span>
-                    <span style={{fontSize:10,color:C.muted,marginLeft:8}}>
-                      {ev.type} · {ev.hand} · @{(ev.tStart||0).toFixed(2)}s · {nTrials}/5 trials
-                    </span>
-                  </div>
-                  <Btn small danger onClick={e=>{e.stopPropagation();setCurEvs(prev=>prev.filter(x=>x.id!==ev.id));if(activeEventId===ev.id)setActiveEventId(null);}}>×</Btn>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Event editor */}
-          {activeEvent && (
-            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginTop:2}}>
-              <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Edit: {activeEvent.label}</div>
-
-              {/* Row 1: label, type, hand, direction */}
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-                <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Label</div>
-                  <input value={activeEvent.label} onChange={e=>updateEvent({label:e.target.value})}
-                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Type</div>
-                  <select value={activeEvent.type} onChange={e=>updateEvent({type:e.target.value})}
-                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
-                    {TYPE_OPTS.map(t=><option key={t} value={t}>{t[0].toUpperCase()+t.slice(1)}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Hand / Side</div>
-                  <select value={activeEvent.hand} onChange={e=>updateEvent({hand:e.target.value})}
-                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
-                    {HAND_OPTS.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Force Direction</div>
-                  <select value={activeEvent.direction||'auto'} onChange={e=>updateEvent({direction:e.target.value})}
-                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
-                    {DIR_OPTS.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              {/* Row 2: tStart + trim */}
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
-                <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Start in XSENS (s)</div>
-                  <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                    <input type="number" step="any" value={activeEvent.tStart}
-                      onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v))updateEvent({tStart:v});}}
-                      style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.accent,fontSize:12}}/>
-                    {/* Clock: snap to current skeleton frame */}
-                    <button onClick={()=>updateEvent({tStart:+ft.toFixed(3)})} title="Set to current frame time"
-                      style={{background:"none",border:`1px solid ${C.border}`,borderRadius:4,cursor:"pointer",padding:"3px 7px",fontSize:14,color:C.muted,lineHeight:1}}>
-                      🕐
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Stop at (s)</div>
-                  <input type="number" step="any" min={0}
-                    value={activeEvent.stopAt ?? ''}
-                    placeholder="end of data"
-                    onChange={e=>{const v=parseFloat(e.target.value);updateEvent({stopAt:isNaN(v)||v<=0?null:v});}}
-                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
-                </div>
-              </div>
-
-              {/* File assignment */}
-              <div style={{marginBottom:8}}>
-                <div style={{fontSize:10,color:C.muted,marginBottom:5}}>
-                  Trials ({validTrials}/5) — click to toggle:
-                </div>
-                {forceFilesList.length === 0 && (
-                  <div style={{fontSize:11,color:C.muted,marginBottom:6}}>
-                    No force files uploaded.{" "}
-                    <span style={{color:C.accent,cursor:"pointer"}} onClick={()=>openUpload("force")}>Upload now →</span>
-                  </div>
-                )}
-                <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-                  {forceFilesList.map((f,fi)=>{
-                    const sel = (activeEvent.fileIndices||[]).includes(fi);
-                    return (
-                      <div key={fi} onClick={()=>{
-                        const cur = activeEvent.fileIndices||[];
-                        if (sel) updateEvent({fileIndices:cur.filter(x=>x!==fi)});
-                        else if (cur.length < 5) updateEvent({fileIndices:[...cur,fi]});
-                      }} style={{
-                        padding:"4px 10px",borderRadius:12,fontSize:11,cursor:"pointer",
-                        background:sel?C.violet+"25":"transparent",
-                        border:`1px solid ${sel?C.violet+"80":C.border}`,
-                        color:sel?C.violet:C.muted
-                      }}>{f.name.replace(/\.csv$/i,"")}</div>
-                    );
-                  })}
-                  <div onClick={()=>openUpload("force")} style={{
-                    padding:"4px 10px",borderRadius:12,fontSize:11,cursor:"pointer",
-                    border:`1px dashed ${C.border}`,color:C.muted
-                  }}>+ Upload</div>
-                </div>
-              </div>
-
-              {/* Averaged chart */}
-              {displayData.length > 0 ? (
-                <>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <span>Averaged — {validTrials} trial{validTrials!==1?"s":""}</span>
-                    {activeEvent.plateauDur > 0 ? (
-                      <span style={{color:C.emerald}}>
-                        Plateau @{activeEvent.plateauT?.toFixed(2)}s +{activeEvent.plateauDur.toFixed(2)}s ({activeEvent.plateauF?.toFixed(0)}N)
-                        {" "}<span style={{cursor:"pointer",color:C.rose}} onClick={()=>updateEvent({plateauT:null,plateauF:null,plateauDur:0})}>✕</span>
-                      </span>
-                    ) : (
-                      <span style={{color:C.muted,fontStyle:"italic"}}>Double-click to set plateau</span>
-                    )}
-                  </div>
-                  <div ref={fpChartRef} style={{height:160,cursor:"crosshair"}} onDoubleClick={handleChartDblClick}>
-                    <ResponsiveContainer key={`avg-${activeEvent.id}-${displayData.length}-${activeEvent.stopAt}-${activeEvent.plateauDur}`}>
-                      <ComposedChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                        <XAxis dataKey="time" type="number" domain={["auto","auto"]}
-                          tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
-                        <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
-                        <Tooltip content={Tt}/>
-                        {activeEvent.plateauT != null && <ReferenceLine x={activeEvent.plateauT} stroke={C.emerald} strokeDasharray="4 2" label={{value:"▶",fill:C.emerald,fontSize:10}}/>}
-                        <ReferenceLine x={ft - (activeEvent.tStart||0)} stroke={C.amber} strokeWidth={1.5} strokeDasharray="3 2"/>
-                        <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Avg"/>
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  </div>
-                  {/* Individual trial traces */}
-                  {validTrials > 1 && (() => {
-                    const traces = (activeEvent.fileIndices||[])
-                      .filter(fi => fi < forceFilesList.length)
-                      .map((fi,i) => {
-                        const f = forceFilesList[fi];
-                        if (!f?.data) return null;
-                        const s = Math.max(1, Math.floor(f.data.length/200));
-                        return {data: f.data.filter((_,j)=>j%s===0), color: CYCLE_COLORS[i%CYCLE_COLORS.length]};
-                      }).filter(Boolean);
-                    return (
-                      <div style={{height:70,marginTop:4}}>
-                        <ResponsiveContainer>
-                          <LineChart margin={{left:0,right:8,top:2,bottom:0}}>
-                            <XAxis type="number" dataKey="time" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="s"/>
-                            <YAxis tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="N" width={44}/>
-                            {traces.map((tr,i)=>(
-                              <Line key={i} data={tr.data} type="monotone" dataKey="force"
-                                stroke={tr.color} dot={false} strokeWidth={1} opacity={0.5} name={`T${i+1}`}/>
-                            ))}
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
-                    );
-                  })()}
-                </>
-              ) : (
-                <div style={{fontSize:11,color:C.muted,textAlign:"center",padding:"12px 0"}}>
-                  Select 1–5 trial files above to see the averaged curve.
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Plateau modal */}
-          {plateauModal && activeEvent && (
-            <div style={{position:"fixed",inset:0,background:"#00000080",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}}
-              onClick={()=>setPlateauModal(null)}>
-              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:24,width:320}}
-                onClick={e=>e.stopPropagation()}>
-                <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>Extend Plateau</div>
-                <div style={{fontSize:12,color:C.muted,marginBottom:14}}>
-                  At <b style={{color:C.accent}}>{plateauModal.t.toFixed(3)}s</b>, force = <b style={{color:C.violet}}>{plateauModal.f.toFixed(1)} N</b>
-                </div>
-                <div style={{marginBottom:14}}>
-                  <div style={{fontSize:11,color:C.muted,marginBottom:5}}>Extend by (seconds)</div>
-                  <input type="number" step="0.1" min={0} autoFocus
-                    value={plateauModal.durStr}
-                    onChange={e=>setPlateauModal(m=>({...m,durStr:e.target.value}))}
-                    onKeyDown={e=>{if(e.key==='Enter'){const v=parseFloat(plateauModal.durStr);if(!isNaN(v)&&v>0){setForceEvents(prev=>prev.map(ev=>ev.id===activeEventId?{...ev,plateauT:plateauModal.t,plateauF:plateauModal.f,plateauDur:v}:ev));setPlateauModal(null);}}if(e.key==='Escape')setPlateauModal(null);}}
-                    style={{width:"100%",background:C.bg,border:`1px solid ${C.accent}`,borderRadius:6,padding:"8px 12px",color:C.text,fontSize:14,boxSizing:"border-box",outline:"none"}}/>
-                </div>
-                <div style={{fontSize:11,color:C.muted,marginBottom:16}}>
-                  The force curve will be cut at {plateauModal.t.toFixed(3)}s and held at {plateauModal.f.toFixed(1)}N for the entered duration.
-                </div>
-                <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-                  <Btn small onClick={()=>setPlateauModal(null)}>Cancel</Btn>
-                  <Btn small active onClick={()=>{
-                    const v=parseFloat(plateauModal.durStr);
-                    if(!isNaN(v)&&v>0){
-                      setForceEvents(prev=>prev.map(ev=>ev.id===activeEventId?{...ev,plateauT:plateauModal.t,plateauF:plateauModal.f,plateauDur:v}:ev));
-                      setPlateauModal(null);
-                    }
-                  }}>Apply</Btn>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    };
 
     // ── Main render ───────────────────────────────────────────────────────
     return (
@@ -1516,178 +1480,7 @@ function Dashboard({ session }) {
         ) : (
           <div style={{display:"grid",gridTemplateColumns:showForcePanel?"300px 1fr":"300px 1fr",gap:14,alignItems:"start"}}>
 
-            {/* ── Skeleton column ── */}
-            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14}}>
-              <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:10}}>
-                {["front","side","top"].map(v=>(
-                  <Btn key={v} active={skelView===v} small onClick={()=>setSkelView(v)}>{v[0].toUpperCase()+v.slice(1)}</Btn>
-                ))}
-              </div>
-              <svg width={W} height={H} style={{display:"block",margin:"0 auto"}}>
-                <rect width={W} height={H} fill={C.bg} rx={8}/>
-                {[0.25,0.5,0.75].map(p=>(
-                  <line key={p} x1={0} y1={H*p} x2={W} y2={H*p} stroke={C.border} strokeWidth={0.5} strokeDasharray="4 4"/>
-                ))}
-                {pts.length > 0 && boneList.map(([a,b],i) => {
-                  const pa=pts[a], pb=pts[b]; if (!pa||!pb) return null;
-                  const la=mvnx?.segLabels?.[a]||"", lb=mvnx?.segLabels?.[b]||"";
-                  const isR=/right/i.test(la)||/right/i.test(lb);
-                  const isL=/left/i.test(la)||/left/i.test(lb);
-                  return <line key={i} x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]}
-                    stroke={isR?C.sky:isL?C.rose:C.amber} strokeWidth={isR||isL?3:4} strokeLinecap="round"/>;
-                })}
-                {pts.map((pt,i) => {
-                  if (!pt) return null;
-                  const lbl = mvnx?.segLabels?.[i]||"";
-                  return <circle key={i} cx={pt[0]} cy={pt[1]} r={/head/i.test(lbl)?7:4}
-                    fill={/head/i.test(lbl)?C.amber:C.accent} opacity={0.9}/>;
-                })}
-                {/* ── Force arrows on hands ── */}
-                {(() => {
-                  if (!hasData || !curEvs.length) return null;
-                  const arrows = [];
-                  const segLabels = mvnx?.segLabels || [];
-
-                  // Find hand segment indices
-                  const rightHandIdx = segLabels.findIndex(l => /right.*hand|hand.*right/i.test(l));
-                  const leftHandIdx  = segLabels.findIndex(l => /left.*hand|hand.*left/i.test(l));
-
-                  curEvs.forEach(ev => {
-                    if (!ev.fileIndices?.length) return;
-                    const avgData = allEvAveraged[ev.id] || [];
-                    if (!avgData.length) return;
-
-                    // Time in force event's local timeline
-                    const localT = ft - (ev.tStart || 0);
-                    if (localT < 0 || localT > avgData[avgData.length - 1].time + 0.5) return;
-
-                    // Interpolate force magnitude at current time
-                    let forceMag = 0;
-                    if (localT <= avgData[0].time) {
-                      forceMag = avgData[0].force;
-                    } else if (localT >= avgData[avgData.length - 1].time) {
-                      forceMag = avgData[avgData.length - 1].force;
-                    } else {
-                      for (let k = 0; k < avgData.length - 1; k++) {
-                        if (localT >= avgData[k].time && localT <= avgData[k+1].time) {
-                          const frac = (localT - avgData[k].time) / (avgData[k+1].time - avgData[k].time);
-                          forceMag = avgData[k].force + frac * (avgData[k+1].force - avgData[k].force);
-                          break;
-                        }
-                      }
-                    }
-                    if (forceMag < 1) return; // skip near-zero
-
-                    const peakForce = Math.max(...avgData.map(d => d.force), 1);
-                    const MAX_LEN = 70;
-                    const arrowLen = Math.max(12, (forceMag / peakForce) * MAX_LEN);
-
-                    // Determine SVG direction vector
-                    let svgDir = null;
-                    const dirKey = ev.direction || 'auto';
-                    if (dirKey !== 'auto' && DIR_SVG[dirKey]) {
-                      const vec = DIR_SVG[dirKey][skelView] || [0, -1];
-                      const mag = Math.sqrt(vec[0]**2 + vec[1]**2) || 1;
-                      svgDir = [vec[0]/mag, vec[1]/mag];
-                    }
-
-                    // Which hands to draw on
-                    const hands = ev.hand === 'bilateral'
-                      ? [rightHandIdx, leftHandIdx]
-                      : ev.hand === 'left'
-                        ? [leftHandIdx]
-                        : [rightHandIdx];
-
-                    hands.forEach((hIdx, hi) => {
-                      if (hIdx < 0 || !pts[hIdx]) return;
-                      const [hx, hy] = pts[hIdx];
-
-                      // Auto direction: use forearm→hand bone vector
-                      let dx = 0, dy = -1;
-                      if (!svgDir) {
-                        // find forearm segment (wrist or lower arm)
-                        const isRight = ev.hand === 'right' || (ev.hand === 'bilateral' && hi === 0);
-                        const forearmIdx = segLabels.findIndex(l =>
-                          isRight ? /right.*(forearm|lowerarm|wrist)/i.test(l) : /left.*(forearm|lowerarm|wrist)/i.test(l)
-                        );
-                        if (forearmIdx >= 0 && pts[forearmIdx]) {
-                          const [fx, fy] = pts[forearmIdx];
-                          const rawDx = hx - fx, rawDy = hy - fy;
-                          const rawMag = Math.sqrt(rawDx**2 + rawDy**2) || 1;
-                          dx = rawDx / rawMag; dy = rawDy / rawMag;
-                        }
-                      } else {
-                        [dx, dy] = svgDir;
-                      }
-
-                      const tipX = hx + dx * arrowLen;
-                      const tipY = hy + dy * arrowLen;
-
-                      // Arrowhead (two short lines at ~30° from tip)
-                      const headLen = 8;
-                      const angle = Math.atan2(dy, dx);
-                      const a1x = tipX - headLen * Math.cos(angle - 0.5);
-                      const a1y = tipY - headLen * Math.sin(angle - 0.5);
-                      const a2x = tipX - headLen * Math.cos(angle + 0.5);
-                      const a2y = tipY - headLen * Math.sin(angle + 0.5);
-
-                      const color = ev.hand === 'left' || (ev.hand === 'bilateral' && hi === 1) ? "#4ade80" : "#fbbf24";
-                      const key = `arrow-${ev.id}-${hi}`;
-
-                      arrows.push(
-                        <g key={key}>
-                          <line x1={hx} y1={hy} x2={tipX} y2={tipY}
-                            stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
-                          <line x1={tipX} y1={tipY} x2={a1x} y2={a1y}
-                            stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
-                          <line x1={tipX} y1={tipY} x2={a2x} y2={a2y}
-                            stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
-                          <text x={tipX + dx*4} y={tipY + dy*4 + 4}
-                            fill={color} fontSize={9} textAnchor="middle" fontWeight="bold">
-                            {forceMag.toFixed(0)}N
-                          </text>
-                        </g>
-                      );
-                    });
-                  });
-
-                  return arrows;
-                })()}
-                {!hasData&&<text x={W/2} y={H-16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose — upload MVNX</text>}
-              </svg>
-
-              {hasData ? (
-                <div style={{marginTop:10}}>
-                  <div style={{display:"flex",gap:5,justifyContent:"center",marginBottom:6,flexWrap:"wrap"}}>
-                    <Btn small onClick={()=>{setSkelFrame(0);setSkelPlaying(false);}}>⏮</Btn>
-                    <Btn small active={skelPlaying} onClick={()=>setSkelPlaying(p=>!p)}>{skelPlaying?"⏸":"▶"}</Btn>
-                    <Btn small onClick={()=>{setSkelPlaying(false);setSkelFrame(mvnx.frames.length-1);}}>⏭</Btn>
-                    {[0.25,0.5,1,2,4].map(s=>(
-                      <Btn key={s} small active={skelSpeed===s} onClick={()=>setSkelSpeed(s)}>{s}×</Btn>
-                    ))}
-                  </div>
-                  <input type="range" min={0} max={mvnx.frames.length-1} value={skelFrame}
-                    onChange={e=>setSkelFrame(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted,marginTop:3}}>
-                    <span>t={ft.toFixed(2)}s</span>
-                    <span>{skelFrame+1}/{mvnx.frames.length}</span>
-                    <span>{mvnx.duration?.toFixed(1)}s@{mvnx.frameRate}Hz</span>
-                  </div>
-                </div>
-              ) : (
-                <div style={{textAlign:"center",marginTop:14}}>
-                  <Btn active onClick={()=>openUpload("mvnx")}>Upload MVNX</Btn>
-                </div>
-              )}
-
-              {/* Force toggle button */}
-              <div style={{marginTop:12,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
-                <Btn active={showForcePanel} onClick={()=>setShowForcePanel(p=>!p)}
-                  style={{width:"100%",justifyContent:"center",textAlign:"center"}}>
-                  {showForcePanel ? "✕ Close Force Panel" : "⚡ Force"}
-                </Btn>
-              </div>
-            </div>
+            {renderSkeletonCore()}
 
             {/* ── Right column: force panel OR joint panels ── */}
             {showForcePanel ? renderForcePanel() : (
@@ -1973,7 +1766,12 @@ function Dashboard({ session }) {
     const hasData    = invDynData?.length > 0;
     if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
 
-    // JointChart: shows resultant magnitude by default, FE/LB/AR when showMomComponents
+    // Active event window for ReferenceArea
+    const evStart = activeEvent?.tStart ?? null;
+    const evDur   = averagedEvData.length ? averagedEvData[averagedEvData.length-1].time : 0;
+    const evEnd   = evStart != null ? evStart + evDur : null;
+
+    // JointChart: resultant magnitude by default, FE/LB/AR components when showMomComponents
     const JointChart = ({title, dataKey, color=C.accent}) => {
       const d = invDynData?.map(r => {
         const v = r[dataKey];
@@ -1991,6 +1789,9 @@ function Dashboard({ session }) {
               <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="Nm"/>
               <Tooltip content={Tt}/>
               <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
+              {evStart!=null && evEnd!=null && (
+                <ReferenceArea x1={evStart} x2={evEnd} fill={C.accent} fillOpacity={0.08}/>
+              )}
               {showMomComponents ? (
                 <>
                   <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE (flex/ext)"/>
@@ -2011,143 +1812,114 @@ function Dashboard({ session }) {
       <div>
         {activeJob && <FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
 
-        {/* Config bar */}
-        <div style={{display:"flex",gap:14,marginBottom:14,alignItems:"center",flexWrap:"wrap",
-          background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px"}}>
-          <div style={{display:"flex",gap:6,alignItems:"center"}}>
-            <span style={{fontSize:12,color:C.muted}}>Body mass:</span>
-            <input type="number" step="any" min={20} max={250} value={bodyMass}
-              onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>0)setBodyMass(v);}}
-              style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.accent,fontSize:12}}/>
-            <span style={{fontSize:12,color:C.muted}}>kg</span>
-          </div>
-          {mvnxFiles.length > 1 && (
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.muted}}>MVNX:</span>
-              <select value={skelFileIdx} onChange={e=>setSkelFileIdx(+e.target.value)}
-                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
-                {mvnxFiles.map((f,i)=><option key={i} value={i}>{f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}</option>)}
-              </select>
-            </div>
-          )}
-          {forceFiles.length > 1 && (
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.muted}}>WiDACS:</span>
-              <select value={activeForceIdx} onChange={e=>setActiveForceIdx(+e.target.value)}
-                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
-                {forceFiles.map((f,i)=><option key={i} value={i}>{f.name}</option>)}
-              </select>
-            </div>
-          )}
-          <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
-            {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"} · {hasF?"✓ WiDACS":"✗ WiDACS"}
-            {activeLsf?.blipTime!=null && <span style={{color:C.amber,marginLeft:6}}>⚡ synced to blip {activeLsf.blipTime.toFixed(2)}s</span>}
-          </div>
-        </div>
+        <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:14,alignItems:"start",marginTop:10}}>
 
-        {/* WiDACS chart (no sync controls — auto-synced via blip) */}
-        {hasF && (
-          <ChartCard title={<span>WiDACS Force<span style={{fontSize:10,color:C.muted,marginLeft:8}}>peak {ff.stats.peak.toFixed(1)} N · impulse {ff.stats.impulse} N·s</span></span>} h={200}>
-            <ResponsiveContainer>
-              <ComposedChart>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
-                <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
-                <Tooltip content={Tt}/>
-                <ReferenceLine y={ff.stats.peak} stroke={C.rose} strokeDasharray="3 3" opacity={0.4}/>
-                <Line data={shiftedForce} type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Raw force"/>
-              </ComposedChart>
-            </ResponsiveContainer>
-          </ChartCard>
-        )}
-        {!hasF && (
-          <EmptyState icon="📈" title="No WiDACS data" detail="Upload a WiDACS CSV to enable shoulder moment calculation."
-            action={activeJobId&&<Btn active onClick={()=>openUpload("force")}>Upload WiDACS CSV</Btn>}/>
-        )}
+          {/* ── Left column: skeleton viewer + force events panel ── */}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {renderSkeletonCore({showForcePanelToggle:false})}
+            {renderForcePanel()}
+          </div>
 
-        {/* Dynamics section */}
-        {!hasMvnx ? (
-          <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data to compute joint moments."/>
-        ) : hasData ? (
-          <>
-            <div style={{display:"flex",alignItems:"center",gap:12,margin:"18px 0 10px",
-              borderBottom:`1px solid ${C.accent}40`,paddingBottom:6}}>
-              <span style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>
-                Joint Moments — Quasi-Static
-              </span>
-              <button onClick={()=>setShowMomComponents(v=>!v)} style={{
-                marginLeft:"auto",background:"none",border:`1px solid ${C.border}`,borderRadius:6,
-                padding:"3px 10px",color:showMomComponents?C.accent:C.muted,fontSize:11,cursor:"pointer"}}>
-                {showMomComponents ? "Show resultant" : "Show FE / LB / AR"}
-              </button>
-            </div>
-            {!hasLS && (
-              <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
-                padding:"10px 14px",marginBottom:12,fontSize:12,color:C.amber}}>
-                No LoadSOL paired to this cycle — bottom-up L5/S1 will be zero. Pair a LoadSOL in the Skeleton tab.
+          {/* ── Right column: config + shoulder moment charts + peak table ── */}
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+
+            {/* Config bar */}
+            <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",
+              background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px"}}>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <span style={{fontSize:12,color:C.muted}}>Body mass:</span>
+                <input type="number" step="any" min={20} max={250} value={bodyMass}
+                  onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>0)setBodyMass(v);}}
+                  style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.accent,fontSize:12}}/>
+                <span style={{fontSize:12,color:C.muted}}>kg</span>
               </div>
-            )}
-
-            {/* L5/S1 — two separate charts */}
-            <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>
-              L5/S1 Moment
-            </div>
-            <div style={{marginBottom:6,fontSize:11,color:C.muted,lineHeight:1.6}}>
-              <span style={{color:C.sky,fontWeight:600}}>Bottom-Up</span>
-              {" "}— GRF propagated upward through legs → pelvis → L5/S1 (requires LoadSOL).{"  "}
-              <span style={{color:C.violet,fontWeight:600}}>Top-Down</span>
-              {" "}— weight of all segments above L5/S1 + WiDACS hand force, moment arm about L5/S1 (requires WiDACS + MVNX posture).
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14,marginBottom:18}}>
-              <JointChart title="L5/S1 — Bottom-Up (via LoadSOL)" dataKey="L5S1_bottom" color={C.sky}/>
-              <JointChart title="L5/S1 — Top-Down (via WiDACS + trunk weight)" dataKey="L5S1_top" color={C.violet}/>
+              {mvnxFiles.length > 1 && (
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <span style={{fontSize:12,color:C.muted}}>MVNX:</span>
+                  <select value={skelFileIdx} onChange={e=>setSkelFileIdx(+e.target.value)}
+                    style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
+                    {mvnxFiles.map((f,i)=><option key={i} value={i}>{f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}</option>)}
+                  </select>
+                </div>
+              )}
+              <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
+                {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"}
+                {activeLsf?.blipTime!=null && <span style={{color:C.amber,marginLeft:6}}>⚡ blip {activeLsf.blipTime.toFixed(2)}s</span>}
+              </div>
             </div>
 
             {/* Shoulder moments */}
-            <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>
-              Shoulder Moments (Top-Down via WiDACS)
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
-              <JointChart title="Right Shoulder" dataKey="shoulderR" color={C.amber}/>
-              <JointChart title="Left Shoulder"  dataKey="shoulderL" color={C.emerald}/>
-            </div>
+            {!hasMvnx ? (
+              <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data to compute shoulder moments."/>
+            ) : !hasData ? (
+              <EmptyState icon="📐" title="No dynamics data" detail="Assign force events to hands to compute shoulder moments."/>
+            ) : (
+              <>
+                <div style={{display:"flex",alignItems:"center",gap:12,
+                  borderBottom:`1px solid ${C.accent}40`,paddingBottom:6}}>
+                  <span style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>
+                    Shoulder Moments — Quasi-Static
+                  </span>
+                  <button onClick={()=>setShowMomComponents(v=>!v)} style={{
+                    marginLeft:"auto",background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+                    padding:"3px 10px",color:showMomComponents?C.accent:C.muted,fontSize:11,cursor:"pointer"}}>
+                    {showMomComponents ? "Show resultant" : "Show FE / LB / AR"}
+                  </button>
+                </div>
 
-            {/* Peak table */}
-            <div style={{marginTop:18,overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                <thead>
-                  <tr style={{borderBottom:`1px solid ${C.border}`}}>
-                    {["Joint","Method","Peak (Nm)",...(showMomComponents?["Peak FE","Peak LB","Peak AR"]:[])].map(h=>(
-                      <th key={h} style={{textAlign:"left",padding:"5px 10px",color:C.muted,fontWeight:600}}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    {label:"L5/S1",      key:"L5S1_bottom", method:"Bottom-Up (LoadSOL)"},
-                    {label:"L5/S1",      key:"L5S1_top",    method:"Top-Down (WiDACS)"},
-                    {label:"R Shoulder", key:"shoulderR",   method:"Top-Down (WiDACS)"},
-                    {label:"L Shoulder", key:"shoulderL",   method:"Top-Down (WiDACS)"},
-                  ].map(({label,key,method}) => {
-                    const d = invDynData.map(r => r[key]).filter(Boolean);
-                    if (!d.length) return null;
-                    const pk = c => Math.max(...d.map(r => Math.abs(r[c]||0))).toFixed(1);
-                    return (
-                      <tr key={key+method} style={{borderBottom:`1px solid ${C.border}20`}}>
-                        <td style={{padding:"5px 10px",color:C.text,fontWeight:500}}>{label}</td>
-                        <td style={{padding:"5px 10px",color:C.muted,fontSize:10}}>{method}</td>
-                        <td style={{padding:"5px 10px",color:C.accent,fontWeight:600}}>{pk("mag")}</td>
-                        {showMomComponents&&<td style={{padding:"5px 10px",color:C.teal}}>{pk("FE")}</td>}
-                        {showMomComponents&&<td style={{padding:"5px 10px",color:C.amber}}>{pk("LB")}</td>}
-                        {showMomComponents&&<td style={{padding:"5px 10px",color:C.rose}}>{pk("AR")}</td>}
+                {/* L5/S1 bottom-up */}
+                {!hasLS && (
+                  <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
+                    padding:"8px 12px",fontSize:11,color:C.amber}}>
+                    No LoadSOL paired — L5/S1 bottom-up will be zero. Pair in Skeleton tab.
+                  </div>
+                )}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+                  <JointChart title="L5/S1 — Bottom-Up (via LoadSOL)" dataKey="L5S1" color={C.sky}/>
+                </div>
+
+                {/* Shoulder charts */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+                  <JointChart title="Right Shoulder" dataKey="shoulderR" color={C.amber}/>
+                  <JointChart title="Left Shoulder"  dataKey="shoulderL" color={C.emerald}/>
+                </div>
+
+                {/* Peak table */}
+                <div style={{overflowX:"auto",background:C.card,border:`1px solid ${C.border}`,borderRadius:8}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead>
+                      <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                        {["Joint","Peak (Nm)",...(showMomComponents?["Peak FE","Peak LB","Peak AR"]:[])].map(h=>(
+                          <th key={h} style={{textAlign:"left",padding:"7px 12px",color:C.muted,fontWeight:600}}>{h}</th>
+                        ))}
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : null}
+                    </thead>
+                    <tbody>
+                      {[
+                        {label:"L5/S1 (bottom-up)", key:"L5S1",     color:C.sky},
+                        {label:"R Shoulder",         key:"shoulderR", color:C.amber},
+                        {label:"L Shoulder",         key:"shoulderL", color:C.emerald},
+                      ].map(({label,key,color}) => {
+                        const d = invDynData.map(r => r[key]).filter(Boolean);
+                        if (!d.length) return null;
+                        const pk = c => Math.max(...d.map(r => Math.abs(r[c]||0))).toFixed(1);
+                        return (
+                          <tr key={key} style={{borderBottom:`1px solid ${C.border}20`}}>
+                            <td style={{padding:"6px 12px",color,fontWeight:500}}>{label}</td>
+                            <td style={{padding:"6px 12px",color:C.accent,fontWeight:600}}>{pk("mag")}</td>
+                            {showMomComponents&&<td style={{padding:"6px 12px",color:C.teal}}>{pk("FE")}</td>}
+                            {showMomComponents&&<td style={{padding:"6px 12px",color:C.amber}}>{pk("LB")}</td>}
+                            {showMomComponents&&<td style={{padding:"6px 12px",color:C.rose}}>{pk("AR")}</td>}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
     );
   };
