@@ -609,6 +609,8 @@ function Dashboard({ session }) {
   const [filesLoading,setFilesLoading]= useState(false);
   const [loadingMsg,   setLoadingMsg]  = useState("");
 
+  const [saveError,       setSaveError]       = useState(null);
+
   // Modals
   const [showJobModal,    setShowJobModal]    = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -817,7 +819,12 @@ function Dashboard({ session }) {
         force_events: forceEvents,
         updated_at: new Date().toISOString(),
       }, { onConflict: "job_id" }).then(({ error }) => {
-        if (error) console.error("[biomechanics] settings save failed:", error.message, error.details);
+        if (error) {
+          console.error("[biomechanics] settings save failed:", error.message, error.details);
+          setSaveError(error.message);
+        } else {
+          setSaveError(null);
+        }
       });
     }, 1500);
     return () => clearTimeout(timer);
@@ -2279,6 +2286,16 @@ function Dashboard({ session }) {
           </div>
         </div>
       </div>
+      {saveError && (
+        <div style={{background:"#7f1d1d",borderBottom:`1px solid #dc2626`,padding:"8px 24px",fontSize:12,color:"#fca5a5",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span>⚠ Settings save failed: {saveError} — run the SQL below in Supabase to fix:
+            <code style={{marginLeft:8,background:"rgba(0,0,0,.3)",padding:"2px 6px",borderRadius:3,fontSize:11}}>
+              ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS force_events jsonb DEFAULT '[]'; ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS force_file_sets jsonb DEFAULT '&#123;&#125;';
+            </code>
+          </span>
+          <span style={{cursor:"pointer",marginLeft:12,opacity:.7}} onClick={()=>setSaveError(null)}>✕</span>
+        </div>
+      )}
       <div style={{display:"flex",gap:4,padding:"10px 24px",borderBottom:`1px solid ${C.border}`,background:C.card,overflowX:"auto"}}>
         {TABS.map((t,i)=>(
           <button key={t} onClick={()=>setTab(i)} style={{
