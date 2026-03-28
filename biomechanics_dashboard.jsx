@@ -798,11 +798,36 @@ function Dashboard({ session }) {
       if (data.force_events?.length) {
         setForceEvents(data.force_events);
         setActiveEventId(data.force_events[0]?.id || null);
+      } else {
+        // Fall back to localStorage if Supabase columns don't exist yet
+        try {
+          const lsEv  = JSON.parse(localStorage.getItem(`bmech_fe_${jobId}`)  || 'null');
+          const lsFfs = JSON.parse(localStorage.getItem(`bmech_ffs_${jobId}`) || 'null');
+          if (lsEv?.length)  { setForceEvents(lsEv); setActiveEventId(lsEv[0]?.id || null); }
+          if (lsFfs)           setForceFileSets(lsFfs);
+        } catch(_) {}
       }
+    } else {
+      // No Supabase row at all — load from localStorage
+      try {
+        const lsEv  = JSON.parse(localStorage.getItem(`bmech_fe_${jobId}`)  || 'null');
+        const lsFfs = JSON.parse(localStorage.getItem(`bmech_ffs_${jobId}`) || 'null');
+        if (lsEv?.length)  { setForceEvents(lsEv); setActiveEventId(lsEv[0]?.id || null); }
+        if (lsFfs)           setForceFileSets(lsFfs);
+      } catch(_) {}
     }
     // Short delay so the save effect doesn't fire immediately after loading
     setTimeout(() => { readyToSaveRef.current = true; }, 600);
   };
+
+  // ── Persist force events to localStorage (instant, no DB required) ──────
+  useEffect(() => {
+    if (!activeJobId || !readyToSaveRef.current) return;
+    try {
+      localStorage.setItem(`bmech_fe_${activeJobId}`,  JSON.stringify(forceEvents));
+      localStorage.setItem(`bmech_ffs_${activeJobId}`, JSON.stringify(forceFileSets));
+    } catch(_) {}
+  }, [activeJobId, forceEvents, forceFileSets]); // eslint-disable-line
 
   // ── Auto-save settings when they change ──────────────────────────────────
   useEffect(() => {
@@ -1361,26 +1386,53 @@ function Dashboard({ session }) {
         )}
 
         {/* Cycle / LoadSOL selectors */}
-        {mvnxFiles.length > 1 && (
-          <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap",alignItems:"center"}}>
-            <span style={{fontSize:12,color:C.muted}}>Cycle:</span>
-            {mvnxFiles.map((f,i) => (
-              <Btn key={i} small active={skelFileIdx===i} onClick={()=>{
-                setSkelFileIdx(i); setSkelFrame(0); setSkelPlaying(false);
-                const paired = loadsolPairings[i];
-                if (paired !== undefined) setSkelLoadsolIdx(paired);
-              }}>{f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}</Btn>
-            ))}
-          </div>
-        )}
-        {loadsolFilesList.length > 1 && (
-          <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
-            <span style={{fontSize:12,color:C.muted}}>LoadSOL:</span>
-            {loadsolFilesList.map((f,i) => (
-              <Btn key={i} small active={(loadsolPairings[skelFileIdx]??skelLoadsolIdx)===i} onClick={()=>{
-                setSkelLoadsolIdx(i); setLoadsolPairings(prev=>({...prev,[skelFileIdx]:i}));
-              }}>{f.name.replace(/\.txt$/i,"")}</Btn>
-            ))}
+        {(mvnxFiles.length > 0 || loadsolFilesList.length > 0) && (
+          <div style={{marginBottom:10,background:C.bg,borderRadius:7,border:`1px solid ${C.border}`,overflow:"hidden"}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 16px 1fr",alignItems:"center",
+              padding:"5px 10px",borderBottom:`1px solid ${C.border}`,fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:.5}}>
+              <span>MVNX Cycle</span><span/>
+              <span>LoadSOL</span>
+            </div>
+            {mvnxFiles.map((f,i) => {
+              const pairedIdx = loadsolPairings[i] ?? (loadsolFilesList.length === 1 ? 0 : null);
+              const isActive = skelFileIdx === i;
+              return (
+                <div key={i} onClick={()=>{
+                  setSkelFileIdx(i); setSkelFrame(0); setSkelPlaying(false);
+                  if (pairedIdx != null) setSkelLoadsolIdx(pairedIdx);
+                }} style={{
+                  display:"grid",gridTemplateColumns:"1fr 16px 1fr",alignItems:"center",
+                  padding:"6px 10px",cursor:"pointer",
+                  background: isActive ? C.accent+"18" : "transparent",
+                  borderBottom: i < mvnxFiles.length-1 ? `1px solid ${C.border}` : "none",
+                }}>
+                  <span style={{fontSize:12,color:isActive?C.accent:C.text,fontWeight:isActive?600:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                    {f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}
+                  </span>
+                  <span style={{textAlign:"center",color:C.muted,fontSize:11}}>→</span>
+                  {loadsolFilesList.length > 0 ? (
+                    <select value={pairedIdx ?? ""} onClick={e=>e.stopPropagation()}
+                      onChange={e=>{
+                        const v = e.target.value === "" ? null : +e.target.value;
+                        setLoadsolPairings(prev=>({...prev,[i]:v}));
+                        if (isActive && v != null) setSkelLoadsolIdx(v);
+                      }}
+                      style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:4,
+                        padding:"2px 4px",color:pairedIdx!=null?C.text:C.muted,fontSize:11,width:"100%"}}>
+                      <option value="">— none —</option>
+                      {loadsolFilesList.map((ls,li)=>(
+                        <option key={li} value={li}>{ls.name.replace(/\.txt$/i,"")}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span style={{fontSize:11,color:C.muted,fontStyle:"italic"}}>no LoadSOL</span>
+                  )}
+                </div>
+              );
+            })}
+            {mvnxFiles.length === 0 && loadsolFilesList.length > 0 && (
+              <div style={{padding:"8px 10px",fontSize:12,color:C.muted,fontStyle:"italic"}}>Upload MVNX to pair cycles</div>
+            )}
           </div>
         )}
 
