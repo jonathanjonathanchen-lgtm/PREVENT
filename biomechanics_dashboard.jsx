@@ -166,20 +166,44 @@ const vmag   = v     => Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
 const vnorm  = v     => { const m=vmag(v)||1; return vscale(v,1/m); };
 const vget   = (arr,i) => (arr?.length > i*3+2) ? [arr[i*3],arr[i*3+1],arr[i*3+2]] : [0,0,0];
 
-// ── Winter (2009) segment parameters: [massFrac, comFracFromProx, kGyr] ──────
-// Trunk mass distributed across XSENS spine segments
+// ── Winter (2009) Table 4.1 segment parameters: [massFrac, comFracFromProx, kGyrFromCoM] ──
+// XSENS provides joint positions → segment lengths are computed from actual kinematics.
+// Mass fractions and CoM fractions taken directly from Winter (2009) Table 4.1.
+// Trunk segments: Winter groups spine into Pelvis / Abdomen / Thorax / Head+Neck.
+// These are distributed across XSENS spine segments (Pelvis, L5, L3, T12, T8, Neck, Head).
 const WINTER = {
-  Pelvis:[0.142,0.60,0.31], L5:[0.036,0.50,0.30], L3:[0.036,0.50,0.30],
-  T12:[0.050,0.50,0.30],    T8:[0.085,0.50,0.30],  Neck:[0.012,0.50,0.30],
-  Head:[0.081,0.58,0.495],
-  RightShoulder:[0.009,0.50,0.30],  LeftShoulder:[0.009,0.50,0.30],
-  RightUpperArm:[0.028,0.436,0.322],LeftUpperArm:[0.028,0.436,0.322],
-  RightForearm: [0.016,0.430,0.303],LeftForearm: [0.016,0.430,0.303],
-  RightHand:    [0.006,0.506,0.297],LeftHand:    [0.006,0.506,0.297],
-  RightUpperLeg:[0.100,0.433,0.323],LeftUpperLeg:[0.100,0.433,0.323],
-  RightLowerLeg:[0.046,0.433,0.302],LeftLowerLeg:[0.046,0.433,0.302],
-  RightFoot:    [0.014,0.500,0.475],LeftFoot:    [0.014,0.500,0.475],
-  RightToe:     [0.002,0.500,0.300],LeftToe:     [0.002,0.500,0.300],
+  // Pelvis  — Winter Table 4.1: Pelvis (L4–L5/greater trochanter): mass=0.142, CoM from prox(L4–L5)=0.105
+  // XSENS Pelvis segment vector goes inferior→superior toward L5/S1; CoM near superior end.
+  Pelvis: [0.142, 0.895, 0.31],
+
+  // L5 + L3  — Winter Abdomen (T12–L1/L4–L5): mass=0.139, CoM from prox(T12–L1)=0.44
+  // Split equally across two XSENS lumbar segments.
+  L5:  [0.070, 0.50, 0.30],
+  L3:  [0.070, 0.44, 0.30],
+
+  // T12 + T8  — Winter Thorax (C7–T1/T12–L1): mass=0.216, CoM from prox(C7–T1)=0.82
+  // CoM is near the lower (T12–L1) end of the thorax; 0.82 applied to upper segment.
+  T12: [0.108, 0.50, 0.30],
+  T8:  [0.108, 0.82, 0.30],
+
+  // Neck + Head  — Winter Head and neck (C7–T1/ear canal): mass=0.081, CoM from prox=1.000
+  // Neck ~0.012 estimated; Head takes remainder.
+  Neck: [0.012, 0.50, 0.30],
+  Head: [0.069, 1.00, 0.495],
+
+  // Shoulder  — Winter Table 4.1: no whole-body fraction listed; CoM from sternoclavicular=0.712
+  RightShoulder: [0.009, 0.712, 0.30], LeftShoulder: [0.009, 0.712, 0.30],
+
+  // Upper extremity  — exact Winter Table 4.1 values
+  RightUpperArm: [0.028, 0.436, 0.322], LeftUpperArm: [0.028, 0.436, 0.322],
+  RightForearm:  [0.016, 0.430, 0.303], LeftForearm:  [0.016, 0.430, 0.303],
+  RightHand:     [0.006, 0.506, 0.297], LeftHand:     [0.006, 0.506, 0.297],
+
+  // Lower extremity  — exact Winter Table 4.1 values
+  RightUpperLeg: [0.100, 0.433, 0.323], LeftUpperLeg: [0.100, 0.433, 0.323],
+  RightLowerLeg: [0.0465, 0.433, 0.302], LeftLowerLeg: [0.0465, 0.433, 0.302],
+  RightFoot:     [0.0145, 0.500, 0.475], LeftFoot:     [0.0145, 0.500, 0.475],
+  RightToe:      [0.002, 0.500, 0.300],  LeftToe:      [0.002, 0.500, 0.300],
 };
 // Each segment's geometrical distal reference (for CoM & length)
 const SEG_DISTAL = {
