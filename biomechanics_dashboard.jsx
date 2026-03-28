@@ -785,7 +785,18 @@ function Dashboard({ session }) {
 
     if (data) {
       setExtendDuration(data.extend_duration || 0);
-      setForceBlocks(data.force_blocks || []);
+      // force_blocks stores legacy array OR wrapped object {blocks, events, fileSets}
+      const fb = data.force_blocks;
+      if (Array.isArray(fb)) {
+        setForceBlocks(fb);
+      } else if (fb && typeof fb === 'object') {
+        setForceBlocks(fb.blocks || []);
+        if (fb.events?.length) {
+          setForceEvents(fb.events);
+          setActiveEventId(fb.events[0]?.id || null);
+        }
+        if (fb.fileSets) setForceFileSets(fb.fileSets);
+      }
       if (data.joint_panels?.length) {
         setJointPanels(data.joint_panels.map(p => ({
           ...p,
@@ -794,40 +805,10 @@ function Dashboard({ session }) {
       }
       if (data.loadsol_pairings) setLoadsolPairings(data.loadsol_pairings);
       if (data.body_mass > 0)    setBodyMass(data.body_mass);
-      if (data.force_file_sets)  setForceFileSets(data.force_file_sets);
-      if (data.force_events?.length) {
-        setForceEvents(data.force_events);
-        setActiveEventId(data.force_events[0]?.id || null);
-      } else {
-        // Fall back to localStorage if Supabase columns don't exist yet
-        try {
-          const lsEv  = JSON.parse(localStorage.getItem(`bmech_fe_${jobId}`)  || 'null');
-          const lsFfs = JSON.parse(localStorage.getItem(`bmech_ffs_${jobId}`) || 'null');
-          if (lsEv?.length)  { setForceEvents(lsEv); setActiveEventId(lsEv[0]?.id || null); }
-          if (lsFfs)           setForceFileSets(lsFfs);
-        } catch(_) {}
-      }
-    } else {
-      // No Supabase row at all — load from localStorage
-      try {
-        const lsEv  = JSON.parse(localStorage.getItem(`bmech_fe_${jobId}`)  || 'null');
-        const lsFfs = JSON.parse(localStorage.getItem(`bmech_ffs_${jobId}`) || 'null');
-        if (lsEv?.length)  { setForceEvents(lsEv); setActiveEventId(lsEv[0]?.id || null); }
-        if (lsFfs)           setForceFileSets(lsFfs);
-      } catch(_) {}
     }
     // Short delay so the save effect doesn't fire immediately after loading
     setTimeout(() => { readyToSaveRef.current = true; }, 600);
   };
-
-  // ── Persist force events to localStorage (instant, no DB required) ──────
-  useEffect(() => {
-    if (!activeJobId || !readyToSaveRef.current) return;
-    try {
-      localStorage.setItem(`bmech_fe_${activeJobId}`,  JSON.stringify(forceEvents));
-      localStorage.setItem(`bmech_ffs_${activeJobId}`, JSON.stringify(forceFileSets));
-    } catch(_) {}
-  }, [activeJobId, forceEvents, forceFileSets]); // eslint-disable-line
 
   // ── Auto-save settings when they change ──────────────────────────────────
   useEffect(() => {
@@ -836,12 +817,10 @@ function Dashboard({ session }) {
       supabase.from("job_settings").upsert({
         job_id: activeJobId,
         extend_duration: extendDuration,
-        force_blocks: forceBlocks,
+        force_blocks: { blocks: forceBlocks, events: forceEvents, fileSets: forceFileSets },
         joint_panels: jointPanels,
         loadsol_pairings: loadsolPairings,
         body_mass: bodyMass,
-        force_file_sets: forceFileSets,
-        force_events: forceEvents,
         updated_at: new Date().toISOString(),
       }, { onConflict: "job_id" }).then(({ error }) => {
         if (error) {
