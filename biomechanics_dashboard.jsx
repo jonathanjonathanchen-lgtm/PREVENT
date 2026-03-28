@@ -21,7 +21,7 @@ const C = {
   text:"#e2e8f0", muted:"#94a3b8", accent:"#2dd4bf", red:"#dc2626"
 };
 const CYCLE_COLORS = [C.teal, C.amber, C.rose, C.sky, C.violet, C.emerald, C.orange, C.pink];
-const TABS = ["Skeleton","Cycles","LoadSOL","Forces","Dynamics","Jobs","Pipeline"];
+const TABS = ["Skeleton","Cycles","LoadSOL","Forces & Dynamics","Jobs","Pipeline"];
 
 // ── Skeleton bone fallback (Z-up XSENS: x=forward, y=left, z=up) ─────────────
 const BONES = [
@@ -191,7 +191,10 @@ const SEG_DISTAL = {
 };
 
 // ── Inverse Dynamics Engine (Newton-Euler, bottom-up) ────────────────────────
-function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDirKey) {
+// Quasi-static Newton-Euler inverse dynamics.
+// Inertial terms (ma, Iα) are zero — valid for slow/sustained occupational tasks.
+// Bottom-up from LoadSOL GRF for L5/S1; top-down from WiDACS for shoulders.
+function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDirKey, handSide) {
   if (!mvnx?.frames?.length || !(bodyMass > 0)) return [];
   const G  = [0, 0, -9.81];
   const si = mvnx.segIndex || {};
@@ -206,27 +209,22 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
     segLen[seg] = lens.reduce((a,b)=>a+b,0) / (lens.length||1) || 0.1;
   });
 
-  // Solve one segment — returns proximal joint {F, M, r_prox}
+  // Quasi-static solve: ΣF=0, ΣM=0 (no inertial terms)
   const solve = (label, F_dist, M_dist, r_dist_force, frame) => {
     const idx = si[label];
     if (idx == null) return { F:[0,0,0], M:[0,0,0], r_prox:[0,0,0] };
-    const [mf, cf, kg] = WINTER[label] || [0.001,0.5,0.3];
+    const [mf, cf] = WINTER[label] || [0.001, 0.5];
     const m  = mf * bodyMass;
-    const L  = segLen[label] || 0.1;
-    const I  = m * Math.pow(kg * L, 2);
     const r_prox     = vget(frame.pos, idx);
     const dLabel     = SEG_DISTAL[label];
     const r_dist_geo = dLabel && si[dLabel] != null ? vget(frame.pos, si[dLabel]) : vadd(r_prox,[0,0,0.1]);
     const r_com      = vadd(r_prox, vscale(vsub(r_dist_geo, r_prox), cf));
-    const a_com      = vget(frame.acc,    idx);
-    const alpha      = vget(frame.angAcc, idx);
-    // F equation: F_prox = m*(a-G) - F_dist
-    const F_prox = vsub(vscale(vsub(a_com, G), m), F_dist);
-    // M equation: M_prox = I*α - M_dist - (r_prox-r_com)×F_prox - (r_dist_force-r_com)×F_dist
-    const ang_mom = vscale(alpha, I);
-    const M_prox  = vsub(vsub(vsub(ang_mom, M_dist),
-      vcross(vsub(r_prox,      r_com), F_prox)),
-      vcross(vsub(r_dist_force,r_com), F_dist));
+    // ΣF=0: F_prox = −F_dist − m·g  (g = G = [0,0,−9.81])
+    const F_prox = vsub(vscale(G, -m), F_dist);
+    // ΣM=0: M_prox = −M_dist − (r_prox−r_com)×F_prox − (r_dist−r_com)×F_dist
+    const M_prox = vsub(vsub(vneg(M_dist),
+      vcross(vsub(r_prox,       r_com), F_prox)),
+      vcross(vsub(r_dist_force, r_com), F_dist));
     return { F: F_prox, M: M_prox, r_prox };
   };
 
@@ -266,65 +264,53 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
     };
     const R = leg('Right'), L = leg('Left');
 
-    // ── Pelvis (dual hip inputs) ──
+    // ── Pelvis (quasi-static, dual hip inputs) ──
     const r_pelvis = vget(frame.pos, si['Pelvis']);
     const r_L5S1   = si['L5'] != null ? vget(frame.pos, si['L5']) : vadd(r_pelvis,[0,0,0.1]);
-    const [mfP,cfP,kgP] = WINTER['Pelvis'];
-    const m_p  = mfP * bodyMass;
-    const I_p  = m_p * Math.pow(kgP*(segLen['Pelvis']||0.15), 2);
+    const [mfP, cfP] = WINTER['Pelvis'];
+    const m_p     = mfP * bodyMass;
     const r_com_p = vadd(r_pelvis, vscale(vsub(r_L5S1, r_pelvis), cfP));
-    const a_p  = vget(frame.acc, si['Pelvis']);
-    const al_p = vget(frame.angAcc, si['Pelvis']);
-    // Both hip forces act ON pelvis (Newton 3rd of thigh proximal)
-    const F_hR  = vneg(R.thigh.F), M_hR = vneg(R.thigh.M);
-    const F_hL  = vneg(L.thigh.F), M_hL = vneg(L.thigh.M);
-    const r_hR  = vget(frame.pos, si['RightUpperLeg']);
-    const r_hL  = vget(frame.pos, si['LeftUpperLeg']);
-    // F_L5S1 = m*(a-G) - F_hR - F_hL
-    const F_L5S1 = vsub(vsub(vscale(vsub(a_p,G),m_p), F_hR), F_hL);
-    const ang_p  = vscale(al_p, I_p);
+    const F_hR    = vneg(R.thigh.F), M_hR = vneg(R.thigh.M);
+    const F_hL    = vneg(L.thigh.F), M_hL = vneg(L.thigh.M);
+    const r_hR    = vget(frame.pos, si['RightUpperLeg']);
+    const r_hL    = vget(frame.pos, si['LeftUpperLeg']);
+    // ΣF=0: F_L5S1 = −F_hR − F_hL − m_p·g
+    const F_L5S1 = vsub(vsub(vscale(G, -m_p), F_hR), F_hL);
+    // ΣM=0: M_L5S1 = −(r_L5S1−r_com)×F_L5S1 − (r_hR−r_com)×F_hR − (r_hL−r_com)×F_hL − M_hR − M_hL
     const tau_p  = vadd(vadd(
-      vcross(vsub(r_L5S1,r_com_p), F_L5S1),
-      vcross(vsub(r_hR,  r_com_p), F_hR)),
-      vadd(vcross(vsub(r_hL,r_com_p), F_hL), vadd(M_hR, M_hL)));
-    const M_L5S1 = vsub(ang_p, tau_p);
+      vcross(vsub(r_L5S1, r_com_p), F_L5S1),
+      vcross(vsub(r_hR,   r_com_p), F_hR)),
+      vadd(vcross(vsub(r_hL, r_com_p), F_hL), vadd(M_hR, M_hL)));
+    const M_L5S1 = vneg(tau_p);
 
-    // ── Spine (upward from L5S1) ──
-    const sp_L5  = solve('L5',  vneg(F_L5S1), vneg(M_L5S1), r_L5S1,      frame);
-    const sp_L3  = solve('L3',  vneg(sp_L5.F),vneg(sp_L5.M),sp_L5.r_prox,frame);
-    const sp_T12 = solve('T12', vneg(sp_L3.F),vneg(sp_L3.M),sp_L3.r_prox,frame);
+    // ── Arms top-down (WiDACS), quasi-static ──
+    const bilateral = handSide === 'bilateral';
+    const doRight   = !handSide || handSide === 'right' || bilateral;
+    const doLeft    = handSide === 'left' || bilateral;
+    const dirs      = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
+    const armSolve  = (cap) => {
+      const hand = `${cap}Hand`, fore = `${cap}Forearm`, upper = `${cap}UpperArm`;
+      if (!forceData?.length || si[hand] == null) return null;
+      const r_wrist = vget(frame.pos, si[hand]);
+      const r_elbow = vget(frame.pos, si[fore] ?? si[upper]);
+      const handDir = vnorm(vsub(r_wrist, r_elbow));
+      const r_app   = vadd(r_wrist, vscale(handDir, 0.10));
+      const fDir    = dirs[forceDirKey] || handDir;
+      const F_app   = vscale(fDir, bilateral ? wF * 0.5 : wF);
+      const h = solve(hand,  F_app,       [0,0,0],    r_app,       frame);
+      const f = solve(fore,  vneg(h.F),   vneg(h.M),  h.r_prox,    frame);
+      const u = solve(upper, vneg(f.F),   vneg(f.M),  f.r_prox,    frame);
+      return u.M;
+    };
 
-    // ── Right arm top-down (WiDACS) ──
-    let arm = null;
-    if (forceData?.length && si['RightHand'] != null) {
-      const r_wrist  = vget(frame.pos, si['RightHand']);
-      const r_elbow  = vget(frame.pos, si['RightForearm'] ?? si['RightUpperArm']);
-      const handDir  = vnorm(vsub(r_wrist, r_elbow));
-      const r_app    = vadd(r_wrist, vscale(handDir, 0.10));
-      const dirs     = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
-      const fDir     = dirs[forceDirKey] || handDir;
-      const F_app    = vscale(fDir, wF);
-      const h = solve('RightHand',    F_app,         [0,0,0],     r_app,       frame);
-      const f = solve('RightForearm', vneg(h.F),     vneg(h.M),   h.r_prox,    frame);
-      const u = solve('RightUpperArm',vneg(f.F),     vneg(f.M),   f.r_prox,    frame);
-      arm = { wrist:h.M, elbow:f.M, shoulder:u.M };
-    }
-
-    // Convert 3D global moment → FE/LB/AR
-    // Z-up global: X≈forward, Y≈left/right, Z=up
-    // FE ≈ rot about Y-axis (M[1]), LB ≈ rot about X-axis (M[0]), AR ≈ rot about Z-axis (M[2])
+    // FE ≈ M_Y (sagittal), LB ≈ M_X (frontal), AR ≈ M_Z (transverse)
     const fmt = M => ({ FE:+M[1].toFixed(1), LB:+M[0].toFixed(1), AR:+M[2].toFixed(1) });
 
     results.push({
-      t:       +t.toFixed(3),
-      ankleR:  fmt(R.foot.M),   ankleL: fmt(L.foot.M),
-      kneeR:   fmt(R.shank.M),  kneeL:  fmt(L.shank.M),
-      hipR:    fmt(R.thigh.M),  hipL:   fmt(L.thigh.M),
-      L5S1:    fmt(M_L5S1),
-      L4L3:    fmt(sp_L5.M),
-      L1T12:   fmt(sp_L3.M),
-      T9T8:    fmt(sp_T12.M),
-      ...(arm ? { wristR:fmt(arm.wrist), elbowR:fmt(arm.elbow), shoulderR:fmt(arm.shoulder) } : {}),
+      t:     +t.toFixed(3),
+      L5S1:  fmt(M_L5S1),
+      ...(doRight ? { shoulderR: fmt(armSolve('Right') || [0,0,0]) } : {}),
+      ...(doLeft  ? { shoulderL: fmt(armSolve('Left')  || [0,0,0]) } : {}),
     });
   });
   return results;
@@ -651,10 +637,8 @@ function Dashboard({ session }) {
   const fpChartRef                          = useRef(null);
 
   // Forces / settings
-  const [extendDuration, setExtendDuration] = useState(0);
-  const [forceBlocks,    setForceBlocks]    = useState([]);
-  const [showBlockForm,  setShowBlockForm]  = useState(false);
-  const [blockDraft,     setBlockDraft]     = useState({t0:"",t1:"",force:"",label:""});
+  const [forceBlocks,    setForceBlocks]    = useState([]); // kept for DB compat, UI removed
+  const [showTriggerCh,  setShowTriggerCh]  = useState(false);
 
   const fileInputRef       = useRef();
   const loadedJobsRef      = useRef(new Set());
@@ -770,7 +754,7 @@ function Dashboard({ session }) {
   // ── Load settings for active job ──────────────────────────────────────────
   const loadSettings = async (jobId) => {
     readyToSaveRef.current = false;
-    setExtendDuration(0); setForceBlocks([]);
+    setForceBlocks([]);
     setJointPanels([{jointKey:0, planes:4}]);
     setSkelFrame(0); setSkelFileIdx(0); setSkelPlaying(false);
     setSkelLoadsolIdx(0); setLoadsolPairings({});
@@ -784,7 +768,6 @@ function Dashboard({ session }) {
       .maybeSingle();
 
     if (data) {
-      setExtendDuration(data.extend_duration || 0);
       // force_blocks stores legacy array OR wrapped object {blocks, events, fileSets}
       const fb = data.force_blocks;
       if (Array.isArray(fb)) {
@@ -817,7 +800,6 @@ function Dashboard({ session }) {
     if (!activeJobId || !readyToSaveRef.current) return;
     const timer = setTimeout(async () => {
       const payload = {
-        extend_duration: extendDuration,
         force_blocks: { blocks: forceBlocks, events: forceEvents, fileSets: forceFileSets },
         joint_panels: jointPanels,
         loadsol_pairings: loadsolPairings,
@@ -842,7 +824,7 @@ function Dashboard({ session }) {
       setSaveError(null);
     }, 1500);
     return () => clearTimeout(timer);
-  }, [activeJobId, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets, forceEvents]); // eslint-disable-line
+  }, [activeJobId, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets, forceEvents]); // eslint-disable-line
 
   // ── Remember active job across refreshes ─────────────────────────────────
   useEffect(() => {
@@ -992,22 +974,7 @@ function Dashboard({ session }) {
     return activeForce.data.map(d => ({...d, time:+(d.time+forceOffset).toFixed(3)}));
   }, [activeForce, forceOffset]);
 
-  const extendedForce = useMemo(() => {
-    if (!activeForce?.data?.length || extendDuration <= 0) return null;
-    const peak = activeForce.stats.peak;
-    const threshold = peak * 0.35;
-    let susEnd = 0;
-    for (let i = activeForce.data.length-1; i >= 0; i--) {
-      if (activeForce.data[i].force > threshold) { susEnd = i; break; }
-    }
-    if (susEnd <= 0) return null;
-    const susSlice = activeForce.data.slice(0, susEnd+1).filter(d => d.force > threshold);
-    const susForce = susSlice.reduce((s,d) => s+d.force, 0) / susSlice.length;
-    const dt = activeForce.data.length > 1 ? activeForce.data[1].time - activeForce.data[0].time : 0.002;
-    const n = Math.round(extendDuration / dt);
-    const base = activeForce.data[susEnd].time + forceOffset;
-    return Array.from({length:n}, (_,i) => ({time:+(base+(i+1)*dt).toFixed(3), force:+susForce.toFixed(1), ext:true}));
-  }, [activeForce, forceOffset, extendDuration]);
+  const extendedForce = null;
 
   // Memoised joint panel data — only recomputes when panels or MVNX file changes,
   // NOT on every skelFrame tick. This prevents Recharts from reinitialising every frame.
@@ -1067,15 +1034,16 @@ function Dashboard({ session }) {
     const avg = allEvAveraged[ev.id] || [];
     if (!avg.length) return null;
     // Shift to align with XSENS timeline (tStart)
-    return { data: avg.map(d => ({...d, time: +(d.time + (ev.tStart||0)).toFixed(3)})), tStart: ev.tStart||0, dirKey: ev.hand==='left'?'-y':'+y' };
+    return { data: avg.map(d => ({...d, time: +(d.time + (ev.tStart||0)).toFixed(3)})), tStart: ev.tStart||0, dirKey: ev.hand==='left'?'-y':'+y', hand: ev.hand||'right' };
   }, [forceEvents, activeEventId, activeJob?.forceFiles]); // eslint-disable-line
 
   // Inverse dynamics — recomputes only when inputs change, NOT per frame
   const invDynData = useMemo(() => {
-    const fd   = activeEvForDyn?.data || activeForce?.data;
-    const fDir = activeEvForDyn?.dirKey || forceDirKey;
-    const fOff = activeEvForDyn ? 0 : forceOffset; // tStart already baked in for events
-    return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, fd, fOff, fDir);
+    const fd       = activeEvForDyn?.data || activeForce?.data;
+    const fDir     = activeEvForDyn?.dirKey || forceDirKey;
+    const fOff     = activeEvForDyn ? 0 : forceOffset;
+    const handSide = activeEvForDyn?.hand || 'right';
+    return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, fd, fOff, fDir, handSide);
   }, [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey, activeEvForDyn]); // eslint-disable-line
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -1878,16 +1846,27 @@ function Dashboard({ session }) {
             </LineChart></ResponsiveContainer>
           </ChartCard>
           {lsf.data.some(d=>d.trig>0)&&(
-            <ChartCard title="Sync Trigger Channel (area1)" h={140}>
-              <ResponsiveContainer><AreaChart data={d}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
-                <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
-                <Tooltip content={Tt}/>
-                {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2}/>}
-                <Area type="monotone" dataKey="trig" stroke={C.amber} fill={C.amber+"30"} strokeWidth={2} name="Trigger" dot={false}/>
-              </AreaChart></ResponsiveContainer>
-            </ChartCard>
+            <div style={{marginTop:8}}>
+              <button onClick={()=>setShowTriggerCh(v=>!v)}
+                style={{background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+                  padding:"4px 10px",color:C.muted,fontSize:11,cursor:"pointer",display:"flex",
+                  alignItems:"center",gap:6}}>
+                <span style={{fontSize:10}}>{showTriggerCh?"▼":"▶"}</span>
+                Sync Trigger Channel (area1)
+              </button>
+              {showTriggerCh&&(
+                <ChartCard title="Sync Trigger Channel (area1)" h={140}>
+                  <ResponsiveContainer><AreaChart data={d}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                    <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
+                    <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
+                    <Tooltip content={Tt}/>
+                    {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2}/>}
+                    <Area type="monotone" dataKey="trig" stroke={C.amber} fill={C.amber+"30"} strokeWidth={2} name="Trigger" dot={false}/>
+                  </AreaChart></ResponsiveContainer>
+                </ChartCard>
+              )}
+            </div>
           )}
         </div>
       );
@@ -1904,137 +1883,158 @@ function Dashboard({ session }) {
   };
 
   // ════════════════════════════════════════════════════════════════════════════
-  //  TAB 4 — FORCES
+  //  TAB 4 — FORCES & DYNAMICS (combined)
   // ════════════════════════════════════════════════════════════════════════════
   const renderForces = () => {
-    const ff  = activeForce;
-    const lsf = activeJob?.loadsolFiles?.[0];
-    if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
+    const ff         = activeForce;
     const forceFiles = activeJob?.forceFiles || [];
+    const hasMvnx    = !!activeSkelMvnx?.frames?.length;
+    const hasLS      = !!clippedLsf?.length;
+    const hasF       = !!ff?.data?.length;
+    const hasData    = invDynData?.length > 0;
+    if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
+
+    const JointChart = ({title, dataKey}) => {
+      const d = invDynData?.map(r => ({t:r.t, FE:r[dataKey]?.FE, LB:r[dataKey]?.LB, AR:r[dataKey]?.AR})) || [];
+      if (!d.length || !d.some(r => r.FE != null)) return null;
+      const peakFE = Math.max(...d.map(r => Math.abs(r.FE||0)));
+      return (
+        <ChartCard title={<span>{title}<span style={{fontSize:10,color:C.muted,marginLeft:6}}>peak FE {peakFE.toFixed(0)} Nm</span></span>} h={180}>
+          <ResponsiveContainer>
+            <LineChart data={d}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+              <XAxis dataKey="t" type="number" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+              <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="Nm"/>
+              <Tooltip content={Tt}/>
+              <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
+              <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE"/>
+              <Line type="monotone" dataKey="LB" stroke={C.amber} dot={false} strokeWidth={1.5} name="LB"/>
+              <Line type="monotone" dataKey="AR" stroke={C.rose}  dot={false} strokeWidth={1.5} name="AR"/>
+              <Legend wrapperStyle={{fontSize:10}}/>
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      );
+    };
+
     return (
       <div>
-        {activeJob&&<FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
-        {forceFiles.length > 1 && (
-          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
-            <span style={{fontSize:12,color:C.muted}}>Active force file:</span>
-            {forceFiles.map((f,i) => (
-              <Btn key={i} small active={activeForceIdx===i} onClick={()=>setActiveForceIdx(i)}>{f.name}</Btn>
-            ))}
+        {activeJob && <FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
+
+        {/* Config bar */}
+        <div style={{display:"flex",gap:14,marginBottom:14,alignItems:"center",flexWrap:"wrap",
+          background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px"}}>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <span style={{fontSize:12,color:C.muted}}>Body mass:</span>
+            <input type="number" step="any" min={20} max={250} value={bodyMass}
+              onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>0)setBodyMass(v);}}
+              style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.accent,fontSize:12}}/>
+            <span style={{fontSize:12,color:C.muted}}>kg</span>
           </div>
-        )}
-        {!ff ? (
-          <EmptyState icon="📈" title="No force data" detail="Upload a WiDACS CSV or any CSV with time in col 1, force in col 2."
-            action={activeJobId&&<Btn active onClick={()=>openUpload("force")}>Upload Force CSV</Btn>}/>
-        ) : (()=>{
-          const blipTime = lsf?.blipTime;
-          return (
-            <>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:18}}>
+          {forceFiles.length > 1 && (
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:12,color:C.muted}}>WiDACS file:</span>
+              <select value={activeForceIdx} onChange={e=>setActiveForceIdx(+e.target.value)}
+                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
+                {forceFiles.map((f,i)=><option key={i} value={i}>{f.name}</option>)}
+              </select>
+            </div>
+          )}
+          <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
+            {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"} · {hasF?"✓ WiDACS":"✗ WiDACS"}
+          </div>
+        </div>
+
+        {/* WiDACS sync + chart */}
+        {hasF && (
+          <>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:600,color:C.accent,marginBottom:10,textTransform:"uppercase",letterSpacing:.5}}>WiDACS Time Sync</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10,marginBottom:12}}>
                 <Stat label="Peak Force"   value={ff.stats.peak.toFixed(1)} unit="N"/>
                 <Stat label="Time to Peak" value={(ff.stats.peakTime+forceOffset).toFixed(3)} unit="s"/>
                 <Stat label="Impulse"      value={ff.stats.impulse} unit="N·s"/>
-                <Stat label="Time Offset"  value={forceOffset.toFixed(3)} unit="s"/>
+                <Stat label="Offset"       value={forceOffset.toFixed(3)} unit="s"/>
               </div>
-              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,marginBottom:14}}>
-                <div style={{fontSize:12,fontWeight:600,color:C.accent,marginBottom:10,textTransform:"uppercase",letterSpacing:.5}}>Time Sync — Offset</div>
-                <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-                  <div style={{flex:1,minWidth:200}}>
-                    <input type="range" min={-120} max={120} step={0.01} value={forceOffset}
-                      onChange={e=>setForceOffset(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted}}>
-                      <span>−120s</span><span>offset: {forceOffset.toFixed(2)}s</span><span>+120s</span>
-                    </div>
+              <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+                <div style={{flex:1,minWidth:200}}>
+                  <input type="range" min={-120} max={120} step={0.01} value={forceOffset}
+                    onChange={e=>setForceOffset(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted}}>
+                    <span>−120s</span><span>offset: {forceOffset.toFixed(2)}s</span><span>+120s</span>
                   </div>
-                  {blipTime&&<Btn small onClick={()=>setForceOffset(blipTime)}>⚡ Snap to Blip ({blipTime.toFixed(2)}s)</Btn>}
-                  <Btn small onClick={()=>setForceOffset(0)}>Reset</Btn>
                 </div>
+                {activeLsf?.blipTime && <Btn small onClick={()=>setForceOffset(activeLsf.blipTime)}>⚡ Snap to Blip ({activeLsf.blipTime.toFixed(2)}s)</Btn>}
+                <Btn small onClick={()=>setForceOffset(0)}>Reset</Btn>
               </div>
-              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,marginBottom:14}}>
-                <div style={{fontSize:12,fontWeight:600,color:C.accent,marginBottom:10,textTransform:"uppercase",letterSpacing:.5}}>Extend Sustained Push Phase</div>
-                <div style={{fontSize:11,color:C.muted,marginBottom:8}}>Appends extra time at the mean sustained force level after the recorded data ends (above 35% of peak).</div>
-                <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-                  <div style={{flex:1,minWidth:200}}>
-                    <input type="range" min={0} max={120} step={0.5} value={extendDuration}
-                      onChange={e=>setExtendDuration(+e.target.value)} style={{width:"100%",accentColor:C.emerald}}/>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted}}>
-                      <span>0s</span><span style={{color:extendDuration>0?C.emerald:C.muted}}>extend: {extendDuration.toFixed(1)}s</span><span>120s</span>
-                    </div>
-                  </div>
-                  {extendDuration>0&&<Btn small onClick={()=>setExtendDuration(0)}>Clear</Btn>}
-                </div>
+            </div>
+            <ChartCard title="WiDACS Force" h={220}>
+              <ResponsiveContainer>
+                <ComposedChart>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                  <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
+                  <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
+                  <Tooltip content={Tt}/>
+                  <ReferenceLine y={ff.stats.peak} stroke={C.rose} strokeDasharray="3 3" opacity={0.4}/>
+                  <Line data={shiftedForce} type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Raw force"/>
+                </ComposedChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          </>
+        )}
+        {!hasF && (
+          <EmptyState icon="📈" title="No WiDACS data" detail="Upload a WiDACS CSV to enable shoulder moment calculation."
+            action={activeJobId&&<Btn active onClick={()=>openUpload("force")}>Upload WiDACS CSV</Btn>}/>
+        )}
+
+        {/* Dynamics section */}
+        {!hasMvnx ? (
+          <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data to compute joint moments."/>
+        ) : hasData ? (
+          <>
+            <div style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",
+              letterSpacing:.5,margin:"18px 0 8px",borderBottom:`1px solid ${C.accent}40`,paddingBottom:5}}>
+              Joint Moments — Quasi-Static
+            </div>
+            {!hasLS && (
+              <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
+                padding:"10px 14px",marginBottom:12,fontSize:12,color:C.amber}}>
+                No LoadSOL paired to this cycle — L5/S1 moment will be zero. Pair a LoadSOL in the Skeleton tab.
               </div>
-              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,marginBottom:14}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                  <div style={{fontSize:12,fontWeight:600,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>Manual Force Blocks</div>
-                  <Btn small active onClick={()=>setShowBlockForm(v=>!v)}>+ Add Block</Btn>
-                </div>
-                <div style={{fontSize:11,color:C.muted,marginBottom:8}}>Insert estimated/constant force segments.</div>
-                {showBlockForm&&(
-                  <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:10,display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr auto",gap:8,alignItems:"end"}}>
-                    {[["t0","Start (s)"],["t1","End (s)"],["force","Force (N)"],["label","Label"]].map(([k,lbl])=>(
-                      <div key={k}>
-                        <div style={{fontSize:10,color:C.muted,marginBottom:3}}>{lbl}</div>
-                        <input value={blockDraft[k]} onChange={e=>setBlockDraft(b=>({...b,[k]:e.target.value}))}
-                          style={{width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:11,boxSizing:"border-box"}}/>
-                      </div>
+            )}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+              <JointChart title="L5/S1"          dataKey="L5S1"/>
+              <JointChart title="Right Shoulder"  dataKey="shoulderR"/>
+              <JointChart title="Left Shoulder"   dataKey="shoulderL"/>
+            </div>
+            <div style={{marginTop:14,overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                <thead>
+                  <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                    {["Joint","Peak FE (Nm)","Peak LB (Nm)","Peak AR (Nm)"].map(h=>(
+                      <th key={h} style={{textAlign:"left",padding:"5px 10px",color:C.muted,fontWeight:600}}>{h}</th>
                     ))}
-                    <Btn small active onClick={()=>{
-                      const {t0,t1,force,label}=blockDraft;
-                      if (!isNaN(+t0)&&!isNaN(+t1)&&!isNaN(+force)) {
-                        setForceBlocks(b=>[...b,{id:Date.now(),t0:+t0,t1:+t1,force:+force,label:label||"Block"}]);
-                        setBlockDraft({t0:"",t1:"",force:"",label:""});
-                        setShowBlockForm(false);
-                      }
-                    }}>Add</Btn>
-                  </div>
-                )}
-                {forceBlocks.length>0&&(
-                  <div style={{display:"grid",gap:4}}>
-                    {forceBlocks.map(bl=>(
-                      <div key={bl.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.bg,borderRadius:6,padding:"5px 10px",fontSize:11}}>
-                        <span style={{color:C.emerald}}>{bl.label}</span>
-                        <span style={{color:C.muted}}>{bl.t0}s – {bl.t1}s @ {bl.force}N</span>
-                        <Btn small danger onClick={()=>setForceBlocks(b=>b.filter(x=>x.id!==bl.id))}>×</Btn>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <ChartCard title="Force vs Time" h={300}>
-                <ResponsiveContainer>
-                  <ComposedChart>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                    <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
-                    <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
-                    <Tooltip content={Tt}/>
-                    {blipTime&&<ReferenceLine x={blipTime} stroke={C.amber} strokeWidth={2} strokeDasharray="4 2" label={{value:"⚡",fill:C.amber,fontSize:13,position:"insideTop"}}/>}
-                    <ReferenceLine y={ff.stats.peak} stroke={C.rose} strokeDasharray="3 3" opacity={0.5}/>
-                    {forceBlocks.map(bl=>(
-                      <ReferenceArea key={bl.id} x1={bl.t0} x2={bl.t1} y1={0} y2={bl.force}
-                        fill={C.emerald} fillOpacity={0.2} stroke={C.emerald} strokeWidth={1}
-                        label={{value:bl.label,fill:C.emerald,fontSize:10,position:"insideTop"}}/>
-                    ))}
-                    <Line data={shiftedForce} type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Measured Force"/>
-                    {extendedForce&&<Line data={extendedForce} type="monotone" dataKey="force" stroke={C.emerald} dot={false} strokeWidth={2} strokeDasharray="6 3" name="Extended"/>}
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </ChartCard>
-              {lsf&&(
-                <ChartCard title="LoadSOL GRF Reference" h={180}>
-                  <ResponsiveContainer><LineChart data={lsf.data.filter((_,i)=>i%Math.max(1,Math.floor(lsf.data.length/300))===0)}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                    <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
-                    <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
-                    <Tooltip content={Tt}/><Legend wrapperStyle={{fontSize:11}}/>
-                    {blipTime&&<ReferenceLine x={blipTime} stroke={C.amber} strokeWidth={2}/>}
-                    <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={1.5} name="L GRF"/>
-                    <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={1.5} name="R GRF"/>
-                  </LineChart></ResponsiveContainer>
-                </ChartCard>
-              )}
-            </>
-          );
-        })()}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[{label:"L5/S1",key:"L5S1"},{label:"R Shoulder",key:"shoulderR"},{label:"L Shoulder",key:"shoulderL"}].map(({label,key}) => {
+                    const d = invDynData.map(r => r[key]).filter(Boolean);
+                    if (!d.length) return null;
+                    const pk = c => Math.max(...d.map(r => Math.abs(r[c]||0))).toFixed(1);
+                    return (
+                      <tr key={key} style={{borderBottom:`1px solid ${C.border}20`}}>
+                        <td style={{padding:"5px 10px",color:C.text,fontWeight:500}}>{label}</td>
+                        <td style={{padding:"5px 10px",color:C.teal}}>{pk("FE")}</td>
+                        <td style={{padding:"5px 10px",color:C.amber}}>{pk("LB")}</td>
+                        <td style={{padding:"5px 10px",color:C.rose}}>{pk("AR")}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
       </div>
     );
   };
@@ -2171,176 +2171,9 @@ function Dashboard({ session }) {
   };
 
   // ════════════════════════════════════════════════════════════════════════════
-  //  TAB 5 — DYNAMICS
-  // ════════════════════════════════════════════════════════════════════════════
-  const renderDynamics = () => {
-    const hasMvnx = !!activeSkelMvnx?.frames?.length;
-    const hasLS   = !!clippedLsf?.length;
-    const hasF    = !!activeForce?.data?.length;
-    const hasData = invDynData?.length > 0;
-
-    // Build per-joint chart data from flat invDynData
-    const jData = (key) => invDynData?.map(d => ({ t:d.t, FE:d[key]?.FE, LB:d[key]?.LB, AR:d[key]?.AR })) || [];
-
-    const JointChart = ({title, dataKey, h=150}) => {
-      const d = jData(dataKey);
-      if (!d.length) return null;
-      const peak = Math.max(...d.map(r => Math.abs(r.FE||0)));
-      return (
-        <ChartCard title={<span>{title}<span style={{fontSize:10,color:C.muted,marginLeft:8}}>peak FE {peak.toFixed(0)} Nm</span></span>} h={h}>
-          <ResponsiveContainer>
-            <LineChart data={d}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-              <XAxis dataKey="t" type="number" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
-              <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="Nm"/>
-              <Tooltip content={Tt}/>
-              <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
-              <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE"/>
-              <Line type="monotone" dataKey="LB" stroke={C.amber} dot={false} strokeWidth={1.5} name="LB"/>
-              <Line type="monotone" dataKey="AR" stroke={C.rose}  dot={false} strokeWidth={1.5} name="AR"/>
-              <Legend wrapperStyle={{fontSize:10}}/>
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartCard>
-      );
-    };
-
-    const SecHdr = ({label, color}) => (
-      <div style={{fontSize:11,fontWeight:700,color,textTransform:"uppercase",letterSpacing:1,
-        margin:"18px 0 8px",borderBottom:`1px solid ${color}40`,paddingBottom:4}}>{label}</div>
-    );
-
-    return (
-      <div>
-        {/* Config bar */}
-        <div style={{display:"flex",gap:14,marginBottom:16,alignItems:"center",flexWrap:"wrap",
-          background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px"}}>
-          <div style={{display:"flex",gap:6,alignItems:"center"}}>
-            <span style={{fontSize:12,color:C.muted}}>Body mass:</span>
-            <input type="number" step="any" min={20} max={250} value={bodyMass}
-              onChange={e=>{const v=parseFloat(e.target.value); if(!isNaN(v)&&v>0) setBodyMass(v);}}
-              style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
-                padding:"3px 8px",color:C.accent,fontSize:12}}/>
-            <span style={{fontSize:12,color:C.muted}}>kg</span>
-          </div>
-          {(activeJob?.forceFiles?.length||0) > 1 && (
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.muted}}>Force file:</span>
-              <select value={activeForceIdx} onChange={e=>setActiveForceIdx(+e.target.value)}
-                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
-                {(activeJob?.forceFiles||[]).map((f,i)=>(
-                  <option key={i} value={i}>{f.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-          {hasF && (
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.muted}}>Direction:</span>
-              <select value={forceDirKey} onChange={e=>setForceDirKey(e.target.value)}
-                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
-                  padding:"3px 6px",color:C.text,fontSize:11}}>
-                <option value="hand">Auto (hand direction)</option>
-                <option value="+x">Push Forward (+X)</option>
-                <option value="-x">Pull Back (−X)</option>
-                <option value="+y">Push Left (+Y)</option>
-                <option value="-y">Push Right (−Y)</option>
-                <option value="+z">Lift (↑Z)</option>
-                <option value="-z">Lower (↓Z)</option>
-              </select>
-            </div>
-          )}
-          <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
-            {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"} · {hasF?"✓ WiDACS":"✗ WiDACS"}
-          </div>
-        </div>
-
-        {!hasMvnx && <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data."/>}
-        {hasMvnx && !hasLS && (
-          <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
-            padding:"10px 14px",marginBottom:12,fontSize:12,color:C.amber}}>
-            No LoadSOL data — lower extremity and spinal moments will be zero (no ground reaction forces).
-            Upload a LoadSOL file and set blip alignment to get meaningful results.
-          </div>
-        )}
-
-        {hasData && (
-          <>
-            <SecHdr label="Lumbar Spine  (Bottom-Up via LoadSOL GRF)" color={C.accent}/>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:12,marginBottom:4}}>
-              <JointChart title="L5/S1" dataKey="L5S1"/>
-              <JointChart title="L4/L3" dataKey="L4L3"/>
-              <JointChart title="L1/T12" dataKey="L1T12"/>
-              <JointChart title="T9/T8"  dataKey="T9T8"/>
-            </div>
-
-            <SecHdr label="Lower Extremity  (Bottom-Up via LoadSOL GRF)" color={C.sky}/>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:12,marginBottom:4}}>
-              <JointChart title="R Hip"   dataKey="hipR"/>
-              <JointChart title="L Hip"   dataKey="hipL"/>
-              <JointChart title="R Knee"  dataKey="kneeR"/>
-              <JointChart title="L Knee"  dataKey="kneeL"/>
-              <JointChart title="R Ankle" dataKey="ankleR"/>
-              <JointChart title="L Ankle" dataKey="ankleL"/>
-            </div>
-
-            {hasF && (
-              <>
-                <SecHdr label="Right Upper Extremity  (Top-Down via WiDACS)" color={C.violet}/>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:12,marginBottom:4}}>
-                  <JointChart title="R Shoulder" dataKey="shoulderR"/>
-                  <JointChart title="R Elbow"    dataKey="elbowR"/>
-                  <JointChart title="R Wrist"    dataKey="wristR"/>
-                </div>
-              </>
-            )}
-
-            {/* Peak summary table */}
-            <SecHdr label="Peak Joint Moment Summary" color={C.emerald}/>
-            <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                <thead>
-                  <tr style={{borderBottom:`1px solid ${C.border}`}}>
-                    {["Joint","Peak FE (Nm)","Peak LB (Nm)","Peak AR (Nm)"].map(h=>(
-                      <th key={h} style={{textAlign:"left",padding:"4px 10px",color:C.muted,fontWeight:600}}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    {label:"L5/S1",  key:"L5S1"},
-                    {label:"L4/L3",  key:"L4L3"},
-                    {label:"R Hip",  key:"hipR"},
-                    {label:"L Hip",  key:"hipL"},
-                    {label:"R Knee", key:"kneeR"},
-                    {label:"L Knee", key:"kneeL"},
-                    ...(hasF?[{label:"R Shoulder",key:"shoulderR"},{label:"R Elbow",key:"elbowR"}]:[]),
-                  ].map(({label,key}) => {
-                    const d = invDynData.map(r => r[key]).filter(Boolean);
-                    if (!d.length) return null;
-                    const pk = (comp) => Math.max(...d.map(r => Math.abs(r[comp]||0))).toFixed(1);
-                    return (
-                      <tr key={key} style={{borderBottom:`1px solid ${C.border}20`}}>
-                        <td style={{padding:"4px 10px",color:C.text,fontWeight:500}}>{label}</td>
-                        <td style={{padding:"4px 10px",color:C.teal}}>{pk("FE")}</td>
-                        <td style={{padding:"4px 10px",color:C.amber}}>{pk("LB")}</td>
-                        <td style={{padding:"4px 10px",color:C.rose}}>{pk("AR")}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-      </div>
-    );
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
   //  ROOT RENDER
   // ════════════════════════════════════════════════════════════════════════════
-  const panels = [renderSkeleton,renderCycles,renderLoadSOL,renderForces,renderDynamics,renderJobs,renderPipeline];
+  const panels = [renderSkeleton,renderCycles,renderLoadSOL,renderForces,renderJobs,renderPipeline];
   return (
     <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
       <div style={{background:`linear-gradient(135deg,${C.bg},${C.card})`,borderBottom:`1px solid ${C.border}`,padding:"14px 24px"}}>
