@@ -603,7 +603,7 @@ export default function App() {
 // ── Main Dashboard ────────────────────────────────────────────────────────────
 function Dashboard({ session }) {
   const [jobs,        setJobs]        = useState([]);
-  const [activeJobId, setActiveJobId] = useState(null);
+  const [activeJobId, setActiveJobId] = useState(() => localStorage.getItem('bmech_activeJob') || null);
   const [tab,         setTab]         = useState(0);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [filesLoading,setFilesLoading]= useState(false);
@@ -642,7 +642,7 @@ function Dashboard({ session }) {
   const [activeForceIdx, setActiveForceIdx] = useState(0);
 
   // Force events — grouped measurements per task type
-  const [forceEvents,    setForceEvents]    = useState([]);
+  const [forceEvents,    setForceEvents]    = useState({}); // keyed by MVNX storagePath
   // [{id,label,type,hand,tStart,fileIndices[],plateauT,plateauF,plateauDur}]
   const [activeEventId,  setActiveEventId]  = useState(null);
   const [showForcePanel, setShowForcePanel] = useState(false);
@@ -775,7 +775,7 @@ function Dashboard({ session }) {
     setSkelFrame(0); setSkelFileIdx(0); setSkelPlaying(false);
     setSkelLoadsolIdx(0); setLoadsolPairings({});
     setBodyMass(75); setForceFileSets({}); setActiveForceIdx(0);
-    setForceEvents([]); setActiveEventId(null); setShowForcePanel(false);
+    setForceEvents({}); setActiveEventId(null); setShowForcePanel(false);
 
     const { data } = await supabase
       .from("job_settings")
@@ -791,8 +791,10 @@ function Dashboard({ session }) {
         setForceBlocks(fb);
       } else if (fb && typeof fb === 'object') {
         setForceBlocks(fb.blocks || []);
-        if (fb.events?.length) {
-          setForceEvents(fb.events);
+        if (fb.events && !Array.isArray(fb.events)) {
+          setForceEvents(fb.events); // { [mvnxPath]: [...] }
+        } else if (Array.isArray(fb.events) && fb.events.length) {
+          setForceEvents({ '__default__': fb.events }); // legacy migration
           setActiveEventId(fb.events[0]?.id || null);
         }
         if (fb.fileSets) setForceFileSets(fb.fileSets);
@@ -841,6 +843,12 @@ function Dashboard({ session }) {
     }, 1500);
     return () => clearTimeout(timer);
   }, [activeJobId, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets, forceEvents]); // eslint-disable-line
+
+  // ── Remember active job across refreshes ─────────────────────────────────
+  useEffect(() => {
+    if (activeJobId) localStorage.setItem('bmech_activeJob', activeJobId);
+    else localStorage.removeItem('bmech_activeJob');
+  }, [activeJobId]);
 
   // ── Job helpers ───────────────────────────────────────────────────────────
   const createJob = async () => {
@@ -951,15 +959,19 @@ function Dashboard({ session }) {
       return j;
     }));
     if (type === "force") {
-      // Clamp activeForceIdx
       setActiveForceIdx(prev => Math.max(0, Math.min(prev, job.forceFiles.length - 2)));
-      // Remove deleted index from every event's fileIndices; shift down indices above it
-      setForceEvents(prev => prev.map(ev => ({
-        ...ev,
-        fileIndices: (ev.fileIndices || [])
-          .filter(i => i !== idx)
-          .map(i => i > idx ? i - 1 : i),
-      })));
+      setForceEvents(prev => {
+        const updated = {};
+        for (const [key, evs] of Object.entries(prev)) {
+          updated[key] = evs.map(ev => ({
+            ...ev,
+            fileIndices: (ev.fileIndices || [])
+              .filter(i => i !== idx)
+              .map(i => i > idx ? i - 1 : i),
+          }));
+        }
+        return updated;
+      });
     }
   }, [activeJobId, jobs]);
 
@@ -1017,9 +1029,9 @@ function Dashboard({ session }) {
     });
   }, [jointPanels, activeSkelMvnx]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Active LoadSOL (paired with current MVNX cycle)
-  const lsfIdx = loadsolPairings[skelFileIdx] ?? skelLoadsolIdx;
-  const activeLsf = activeJob?.loadsolFiles?.[lsfIdx] || activeJob?.loadsolFiles?.[0] || null;
+  // Active LoadSOL (paired with current MVNX cycle) — null if explicitly set to none
+  const lsfIdx = (skelFileIdx in loadsolPairings) ? loadsolPairings[skelFileIdx] : skelLoadsolIdx;
+  const activeLsf = (lsfIdx != null) ? (activeJob?.loadsolFiles?.[lsfIdx] ?? null) : null;
 
   // Clipped LoadSOL data aligned to XSENS t=0
   const clippedLsf = useMemo(() => {
@@ -1032,7 +1044,8 @@ function Dashboard({ session }) {
 
   // Active force event averaged data (preferred over raw file for Dynamics)
   const activeEvForDyn = useMemo(() => {
-    const ev = forceEvents.find(e => e.id === activeEventId);
+    const allEvs = Object.values(forceEvents).flat();
+    const ev = allEvs.find(e => e.id === activeEventId);
     if (!ev || !(ev.fileIndices?.length)) return null;
     const avg = computeAveraged(ev, activeJob?.forceFiles || []);
     if (!avg.length) return null;
@@ -1063,15 +1076,23 @@ function Dashboard({ session }) {
     const ft = frame?.time || 0;
 
     const loadsolFilesList = activeJob?.loadsolFiles || [];
-    const lsfIdx = loadsolPairings[skelFileIdx] ?? skelLoadsolIdx;
-    const lsf = loadsolFilesList[lsfIdx] || loadsolFilesList[0] || null;
+    const lsfIdx = (skelFileIdx in loadsolPairings) ? loadsolPairings[skelFileIdx] : skelLoadsolIdx;
+    const lsf = (lsfIdx != null) ? (loadsolFilesList[lsfIdx] ?? null) : null;
     const hasLS = !!lsf?.data?.length;
 
     const forceFilesList = activeJob?.forceFiles || [];
     const blipTime = lsf?.blipTime;
 
+    // Force events for this MVNX file
+    const mvnxKey = mvnx?.storagePath || '__default__';
+    const curEvs = forceEvents[mvnxKey] || [];
+    const setCurEvs = updater => setForceEvents(prev => ({
+      ...prev,
+      [mvnxKey]: typeof updater === 'function' ? updater(prev[mvnxKey] || []) : updater,
+    }));
+
     // Active force event
-    const activeEvent = forceEvents.find(e => e.id === activeEventId) || null;
+    const activeEvent = curEvs.find(e => e.id === activeEventId) || null;
     const averagedData = activeEvent ? computeAveraged(activeEvent, forceFilesList) : [];
 
     const TYPE_OPTS = ['push','lift','pinch','pull','carry'];
@@ -1096,7 +1117,7 @@ function Dashboard({ session }) {
 
     // ── Force panel (right side when showForcePanel) ──────────────────────
     const renderForcePanel = () => {
-      const updateEvent = (patch) => setForceEvents(prev =>
+      const updateEvent = (patch) => setCurEvs(prev =>
         prev.map(e => e.id === activeEventId ? {...e, ...patch} : e));
 
       // Double-click on chart → open plateau extension modal
@@ -1128,20 +1149,20 @@ function Dashboard({ session }) {
             <div style={{fontSize:13,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>Force Events</div>
             <Btn small active onClick={()=>{
               const id = `ev_${Date.now()}`;
-              const newEv = {id, label:`Event ${forceEvents.length+1}`, type:'push', hand:'right',
+              const newEv = {id, label:`Event ${curEvs.length+1}`, type:'push', hand:'right',
                 direction:'auto', tStart:0, fileIndices:[], stopAt:null,
                 plateauT:null, plateauF:null, plateauDur:0};
-              setForceEvents(prev=>[...prev, newEv]);
+              setCurEvs(prev=>[...prev, newEv]);
               setActiveEventId(id);
             }}>+ New</Btn>
           </div>
 
           {/* Event list */}
-          {forceEvents.length === 0 && (
+          {curEvs.length === 0 && (
             <div style={{fontSize:11,color:C.muted,padding:"10px 0",textAlign:"center"}}>No events yet — click + New to create one.</div>
           )}
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            {forceEvents.map(ev=>{
+            {curEvs.map(ev=>{
               const nTrials = (ev.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
               return (
                 <div key={ev.id} onClick={()=>setActiveEventId(ev.id)}
@@ -1154,7 +1175,7 @@ function Dashboard({ session }) {
                       {ev.type} · {ev.hand} · @{(ev.tStart||0).toFixed(2)}s · {nTrials}/5 trials
                     </span>
                   </div>
-                  <Btn small danger onClick={e=>{e.stopPropagation();setForceEvents(prev=>prev.filter(x=>x.id!==ev.id));if(activeEventId===ev.id)setActiveEventId(null);}}>×</Btn>
+                  <Btn small danger onClick={e=>{e.stopPropagation();setCurEvs(prev=>prev.filter(x=>x.id!==ev.id));if(activeEventId===ev.id)setActiveEventId(null);}}>×</Btn>
                 </div>
               );
             })}
@@ -1368,7 +1389,7 @@ function Dashboard({ session }) {
             <Stat label="GRF Peak R"  value={lsf?.stats?.rightMax?.toFixed(0)||"—"}                     unit="N"/>
             <Stat label="GRF Peak L"  value={lsf?.stats?.leftMax?.toFixed(0)||"—"}                      unit="N"/>
             <Stat label="Blip"        value={blipTime?.toFixed(3)||"—"}                                  unit="s" color={blipTime?C.amber:undefined}/>
-            <Stat label="Force Events" value={forceEvents.length||"—"}                                  unit=""/>
+            <Stat label="Force Events" value={curEvs?.length||"—"}                                     unit=""/>
           </div>
         )}
 
@@ -1458,7 +1479,7 @@ function Dashboard({ session }) {
                 })}
                 {/* ── Force arrows on hands ── */}
                 {(() => {
-                  if (!hasData || !forceEvents.length) return null;
+                  if (!hasData || !curEvs.length) return null;
                   const arrows = [];
                   const segLabels = mvnx?.segLabels || [];
 
@@ -1466,7 +1487,7 @@ function Dashboard({ session }) {
                   const rightHandIdx = segLabels.findIndex(l => /right.*hand|hand.*right/i.test(l));
                   const leftHandIdx  = segLabels.findIndex(l => /left.*hand|hand.*left/i.test(l));
 
-                  forceEvents.forEach(ev => {
+                  curEvs.forEach(ev => {
                     if (!ev.fileIndices?.length) return;
                     const avgData = computeAveraged(ev, forceFilesList);
                     if (!avgData.length) return;
