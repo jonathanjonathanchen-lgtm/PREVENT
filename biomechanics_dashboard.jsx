@@ -1029,9 +1029,13 @@ function Dashboard({ session }) {
     });
   }, [jointPanels, activeSkelMvnx]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Active LoadSOL (paired with current MVNX cycle) — null if explicitly set to none
-  const lsfIdx = (skelFileIdx in loadsolPairings) ? loadsolPairings[skelFileIdx] : skelLoadsolIdx;
-  const activeLsf = (lsfIdx != null) ? (activeJob?.loadsolFiles?.[lsfIdx] ?? null) : null;
+  // Active LoadSOL — null if no pairing set (or explicitly "none")
+  // Auto-pair only when there is exactly one LoadSOL file and no explicit entry
+  const _lsAll = activeJob?.loadsolFiles || [];
+  const lsfIdx = (skelFileIdx in loadsolPairings)
+    ? loadsolPairings[skelFileIdx]
+    : (_lsAll.length === 1 ? 0 : null);
+  const activeLsf = (lsfIdx != null) ? (_lsAll[lsfIdx] ?? null) : null;
 
   // Clipped LoadSOL data aligned to XSENS t=0
   const clippedLsf = useMemo(() => {
@@ -1076,7 +1080,9 @@ function Dashboard({ session }) {
     const ft = frame?.time || 0;
 
     const loadsolFilesList = activeJob?.loadsolFiles || [];
-    const lsfIdx = (skelFileIdx in loadsolPairings) ? loadsolPairings[skelFileIdx] : skelLoadsolIdx;
+    const lsfIdx = (skelFileIdx in loadsolPairings)
+      ? loadsolPairings[skelFileIdx]
+      : (loadsolFilesList.length === 1 ? 0 : null);
     const lsf = (lsfIdx != null) ? (loadsolFilesList[lsfIdx] ?? null) : null;
     const hasLS = !!lsf?.data?.length;
 
