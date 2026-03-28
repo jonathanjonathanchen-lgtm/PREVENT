@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, memo } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
   LineChart, Line, AreaChart, Area, ComposedChart,
@@ -630,7 +630,7 @@ export default function App() {
 }
 
 // ── Forces & Dynamics right column — memoized so skeleton playback doesn't trigger re-renders ──
-const ForcesRightCol = React.memo(function ForcesRightCol({
+const ForcesRightCol = memo(function ForcesRightCol({
   invDynData, showMomComponents, setShowMomComponents,
   hasMvnx, hasData, hasLS, bodyMass, setBodyMass,
   mvnxFiles, skelFileIdx, setSkelFileIdx, activeLsf,
