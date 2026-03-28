@@ -363,16 +363,9 @@ function computeAveraged(event, forceFiles) {
     const vals = files.map(f => interp1(f.data, t));
     base.push({ time: +t.toFixed(3), force: +(vals.reduce((a,b) => a+b, 0) / vals.length).toFixed(1) });
   }
-  // Trim: crop start and/or cap duration, then re-zero time
-  const trimStart = event.trimStart || 0;
-  const trimDur   = event.trimDur   ?? null;
-  let result = base;
-  if (trimStart > 0 || trimDur != null) {
-    const tEnd = trimDur != null ? trimStart + trimDur : Infinity;
-    result = result
-      .filter(d => d.time >= trimStart - 1e-9 && d.time <= tEnd + 1e-9)
-      .map(d => ({...d, time: +(d.time - trimStart).toFixed(3)}));
-  }
+  // Stop at: cut the curve at a specific time
+  const stopAt = event.stopAt ?? null;
+  let result = stopAt != null ? base.filter(d => d.time <= stopAt + 1e-9) : base;
   // Plateau extension: from plateauT, hold plateauF for plateauDur seconds
   const { plateauT, plateauF, plateauDur } = event;
   if (plateauT != null && plateauF != null && (plateauDur || 0) > 0) {
@@ -823,7 +816,9 @@ function Dashboard({ session }) {
         force_file_sets: forceFileSets,
         force_events: forceEvents,
         updated_at: new Date().toISOString(),
-      }, { onConflict: "job_id" });
+      }, { onConflict: "job_id" }).then(({ error }) => {
+        if (error) console.error("[biomechanics] settings save failed:", error.message, error.details);
+      });
     }, 1500);
     return () => clearTimeout(timer);
   }, [activeJobId, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets, forceEvents]); // eslint-disable-line
@@ -1115,7 +1110,7 @@ function Dashboard({ session }) {
             <Btn small active onClick={()=>{
               const id = `ev_${Date.now()}`;
               const newEv = {id, label:`Event ${forceEvents.length+1}`, type:'push', hand:'right',
-                direction:'auto', tStart:0, fileIndices:[], trimStart:0, trimDur:null,
+                direction:'auto', tStart:0, fileIndices:[], stopAt:null,
                 plateauT:null, plateauF:null, plateauDur:0};
               setForceEvents(prev=>[...prev, newEv]);
               setActiveEventId(id);
@@ -1197,17 +1192,11 @@ function Dashboard({ session }) {
                   </div>
                 </div>
                 <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Trim start (s)</div>
-                  <input type="number" step="any" min={0} value={activeEvent.trimStart||0}
-                    onChange={e=>{const v=parseFloat(e.target.value);updateEvent({trimStart:isNaN(v)?0:Math.max(0,v)});}}
-                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Duration cap (s)</div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Stop at (s)</div>
                   <input type="number" step="any" min={0}
-                    value={activeEvent.trimDur ?? ''}
-                    placeholder="full"
-                    onChange={e=>{const v=parseFloat(e.target.value);updateEvent({trimDur:isNaN(v)||v<=0?null:v});}}
+                    value={activeEvent.stopAt ?? ''}
+                    placeholder="end of data"
+                    onChange={e=>{const v=parseFloat(e.target.value);updateEvent({stopAt:isNaN(v)||v<=0?null:v});}}
                     style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
                 </div>
               </div>
@@ -1261,7 +1250,7 @@ function Dashboard({ session }) {
                     )}
                   </div>
                   <div ref={fpChartRef} style={{height:160,cursor:"crosshair"}} onDoubleClick={handleChartDblClick}>
-                    <ResponsiveContainer>
+                    <ResponsiveContainer key={`avg-${activeEvent.id}-${displayData.length}-${activeEvent.stopAt}-${activeEvent.plateauDur}`}>
                       <ComposedChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}>
                         <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
                         <XAxis dataKey="time" type="number" domain={["auto","auto"]}
@@ -1510,7 +1499,7 @@ function Dashboard({ session }) {
                       const a2x = tipX - headLen * Math.cos(angle + 0.5);
                       const a2y = tipY - headLen * Math.sin(angle + 0.5);
 
-                      const color = ev.hand === 'left' || (ev.hand === 'bilateral' && hi === 1) ? C.rose : C.sky;
+                      const color = ev.hand === 'left' || (ev.hand === 'bilateral' && hi === 1) ? "#4ade80" : "#fbbf24";
                       const key = `arrow-${ev.id}-${hi}`;
 
                       arrows.push(
