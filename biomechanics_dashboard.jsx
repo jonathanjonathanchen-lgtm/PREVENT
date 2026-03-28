@@ -21,7 +21,7 @@ const C = {
   text:"#e2e8f0", muted:"#94a3b8", accent:"#2dd4bf", red:"#dc2626"
 };
 const CYCLE_COLORS = [C.teal, C.amber, C.rose, C.sky, C.violet, C.emerald, C.orange, C.pink];
-const TABS = ["Overview","Skeleton","Cycles","LoadSOL","Forces","Dynamics","Jobs","Pipeline"];
+const TABS = ["Skeleton","Cycles","LoadSOL","Forces","Dynamics","Jobs","Pipeline"];
 
 // ── Skeleton bone fallback (Z-up XSENS: x=forward, y=left, z=up) ─────────────
 const BONES = [
@@ -330,6 +330,40 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
   return results;
 }
 
+// ── Force Event: average N trials + optional plateau extension ───────────────
+function computeAveraged(event, forceFiles) {
+  const files = (event.fileIndices || []).map(i => forceFiles[i]).filter(f => f?.data?.length);
+  if (!files.length) return [];
+  const dt = files[0].data.length > 1 ? files[0].data[1].time - files[0].data[0].time : 0.002;
+  const tMax = Math.min(...files.map(f => f.data[f.data.length - 1].time));
+  const interp1 = (data, t) => {
+    const i = data.findIndex(d => d.time >= t);
+    if (i <= 0) return data[0]?.force ?? 0;
+    if (i >= data.length) return data[data.length - 1]?.force ?? 0;
+    const d0 = data[i-1], d1 = data[i];
+    return d0.force + (t - d0.time) / ((d1.time - d0.time) || 1) * (d1.force - d0.force);
+  };
+  const base = [];
+  for (let t = 0; t <= tMax + 1e-9; t = +(t + dt).toFixed(6)) {
+    const vals = files.map(f => interp1(f.data, t));
+    base.push({ time: +t.toFixed(3), force: +(vals.reduce((a,b) => a+b, 0) / vals.length).toFixed(1) });
+  }
+  // Plateau extension: from plateauT, hold plateauF for plateauDur seconds
+  const { plateauT, plateauF, plateauDur } = event;
+  if (plateauT != null && plateauF != null && (plateauDur || 0) > 0) {
+    const splitIdx = base.findIndex(d => d.time >= plateauT);
+    const pre  = splitIdx >= 0 ? base.slice(0, splitIdx) : base;
+    const nExt = Math.round(plateauDur / dt);
+    const ext  = Array.from({length: nExt}, (_,i) => ({
+      time: +(plateauT + (i+1) * dt).toFixed(3),
+      force: plateauF,
+      plateau: true,
+    }));
+    return [...pre, ...ext];
+  }
+  return base;
+}
+
 // ── Skeleton projection (XSENS Z-up) ─────────────────────────────────────────
 function projectPos(flatPos, view, W, H) {
   const pts = [];
@@ -587,6 +621,15 @@ function Dashboard({ session }) {
   const [forceFileSets,  setForceFileSets]  = useState({});  // {[sp]: {offset, dirKey}}
   const [activeForceIdx, setActiveForceIdx] = useState(0);
 
+  // Force events — grouped measurements per task type
+  const [forceEvents,    setForceEvents]    = useState([]);
+  // [{id,label,type,hand,tStart,fileIndices[],plateauT,plateauF,plateauDur}]
+  const [activeEventId,  setActiveEventId]  = useState(null);
+  const [showForcePanel, setShowForcePanel] = useState(false);
+  // Plateau drag interaction (chart in force panel)
+  const [fpDragState,    setFpDragState]    = useState(null);
+  const fpChartRef                          = useRef(null);
+
   // Forces / settings
   const [extendDuration, setExtendDuration] = useState(0);
   const [forceBlocks,    setForceBlocks]    = useState([]);
@@ -712,6 +755,7 @@ function Dashboard({ session }) {
     setSkelFrame(0); setSkelFileIdx(0); setSkelPlaying(false);
     setSkelLoadsolIdx(0); setLoadsolPairings({});
     setBodyMass(75); setForceFileSets({}); setActiveForceIdx(0);
+    setForceEvents([]); setActiveEventId(null); setShowForcePanel(false);
 
     const { data } = await supabase
       .from("job_settings")
@@ -731,6 +775,10 @@ function Dashboard({ session }) {
       if (data.loadsol_pairings) setLoadsolPairings(data.loadsol_pairings);
       if (data.body_mass > 0)    setBodyMass(data.body_mass);
       if (data.force_file_sets)  setForceFileSets(data.force_file_sets);
+      if (data.force_events?.length) {
+        setForceEvents(data.force_events);
+        setActiveEventId(data.force_events[0]?.id || null);
+      }
     }
     // Short delay so the save effect doesn't fire immediately after loading
     setTimeout(() => { readyToSaveRef.current = true; }, 600);
@@ -748,11 +796,12 @@ function Dashboard({ session }) {
         loadsol_pairings: loadsolPairings,
         body_mass: bodyMass,
         force_file_sets: forceFileSets,
+        force_events: forceEvents,
         updated_at: new Date().toISOString(),
       }, { onConflict: "job_id" });
     }, 1500);
     return () => clearTimeout(timer);
-  }, [activeJobId, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets]);
+  }, [activeJobId, extendDuration, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets, forceEvents]); // eslint-disable-line
 
   // ── Job helpers ───────────────────────────────────────────────────────────
   const createJob = async () => {
@@ -933,77 +982,26 @@ function Dashboard({ session }) {
       .map(d => ({...d, time: +(d.time - activeLsf.blipTime).toFixed(3)}));
   }, [activeLsf]);
 
+  // Active force event averaged data (preferred over raw file for Dynamics)
+  const activeEvForDyn = useMemo(() => {
+    const ev = forceEvents.find(e => e.id === activeEventId);
+    if (!ev || !(ev.fileIndices?.length)) return null;
+    const avg = computeAveraged(ev, activeJob?.forceFiles || []);
+    if (!avg.length) return null;
+    // Shift to align with XSENS timeline (tStart)
+    return { data: avg.map(d => ({...d, time: +(d.time + (ev.tStart||0)).toFixed(3)})), tStart: ev.tStart||0, dirKey: ev.hand==='left'?'-y':'+y' };
+  }, [forceEvents, activeEventId, activeJob?.forceFiles]); // eslint-disable-line
+
   // Inverse dynamics — recomputes only when inputs change, NOT per frame
-  const invDynData = useMemo(() =>
-    computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, activeForce?.data, forceOffset, forceDirKey),
-  [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey]); // eslint-disable-line
+  const invDynData = useMemo(() => {
+    const fd   = activeEvForDyn?.data || activeForce?.data;
+    const fDir = activeEvForDyn?.dirKey || forceDirKey;
+    const fOff = activeEvForDyn ? 0 : forceOffset; // tStart already baked in for events
+    return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, fd, fOff, fDir);
+  }, [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey, activeEvForDyn]); // eslint-disable-line
 
   // ════════════════════════════════════════════════════════════════════════════
-  //  TAB 0 — OVERVIEW
-  // ════════════════════════════════════════════════════════════════════════════
-  const renderOverview = () => {
-    const hasMvnx = !!activeJob?.mvnxFiles?.length;
-    const hasLS   = !!activeJob?.loadsolFiles?.length;
-    const hasF    = !!activeJob?.forceFiles?.length;
-    const sc = (ok,label,detail) => (
-      <div style={{background:ok?C.accent+"12":C.card,border:`1px solid ${ok?C.accent+"50":C.border}`,borderRadius:8,padding:"10px 14px"}}>
-        <div style={{fontSize:12,fontWeight:600,color:ok?C.accent:C.muted,marginBottom:2}}>{ok?"✓ ":"○ "}{label}</div>
-        <div style={{fontSize:11,color:C.muted}}>{detail}</div>
-      </div>
-    );
-
-    if (filesLoading) return (
-      <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:300,gap:14}}>
-        <Spinner size={32}/>
-        <div style={{fontSize:13,color:C.muted}}>{loadingMsg || "Loading files from cloud…"}</div>
-      </div>
-    );
-
-    return (
-      <div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:8,marginBottom:18}}>
-          {sc(hasMvnx,"MVNX",hasMvnx?`${activeJob.mvnxFiles.length} cycle(s)`:"Upload .mvnx")}
-          {sc(hasLS,"LoadSOL",hasLS?`${activeJob.loadsolFiles.length} file(s)`:"Upload TXT")}
-          {sc(hasF,"Force",hasF?`${activeJob.forceFiles.length} file(s)`:"Upload CSV")}
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:18}}>
-          <Stat label="MVNX Cycles"    value={activeJob?.mvnxFiles?.length||"—"} unit="files"/>
-          <Stat label="Trial Duration" value={activeJob?.mvnxFiles?.[0]?.duration?.toFixed(1)||"—"} unit="s"/>
-          <Stat label="GRF Peak (R)"   value={activeJob?.loadsolFiles?.[0]?.stats?.rightMax?.toFixed(0)||"—"} unit="N"/>
-          <Stat label="Force Peak"     value={activeForce?.stats?.peak?.toFixed(1)||"—"} unit="N"/>
-          <Stat label="XSENS Blip"     value={activeJob?.loadsolFiles?.[0]?.blipTime?.toFixed(3)||"—"} unit="s"
-            sub="sync marker" color={activeJob?.loadsolFiles?.[0]?.blipTime?C.amber:undefined}/>
-        </div>
-        {!activeJobId ? (
-          <EmptyState icon="🗂" title="No job selected" detail="Create or select a job to get started."
-            action={<Btn active onClick={()=>setShowJobModal(true)}>Create Job</Btn>}/>
-        ) : !hasMvnx ? (
-          <EmptyState icon="📁" title="No data loaded" detail="Upload MVNX, LoadSOL TXT, and force CSV."
-            action={<Btn active onClick={()=>openUpload("mvnx")}>Upload Files</Btn>}/>
-        ) : (
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-            {(()=>{
-              const mvnx = activeJob.mvnxFiles[0];
-              const ji = mvnx.jointLabels?.findIndex(l => /jl5s1/i.test(l)) ?? 0;
-              const stride = Math.max(1, Math.floor(mvnx.frames.length/150));
-              const d = mvnx.frames.filter((_,i) => i%stride===0).map(f => ({t:+f.time.toFixed(2), fe:+(f.ja?.[ji*3+2]??0).toFixed(2)}));
-              return <ChartCard title="L4/L5 Flex/Ext" h={180}><ResponsiveContainer><LineChart data={d}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:9}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/><Tooltip content={Tt}/><Line type="monotone" dataKey="fe" stroke={C.teal} dot={false} strokeWidth={1.5} name="FE"/></LineChart></ResponsiveContainer></ChartCard>;
-            })()}
-            {hasLS&&(()=>{
-              const lsf = activeJob.loadsolFiles[0];
-              const stride = Math.max(1, Math.floor(lsf.data.length/150));
-              const d = lsf.data.filter((_,i) => i%stride===0);
-              return <ChartCard title="LoadSOL GRF" h={180}><ResponsiveContainer><LineChart data={d}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="time" tick={{fill:C.muted,fontSize:9}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/><Tooltip content={Tt}/>{lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2}/>}<Line type="monotone" dataKey="left" stroke={C.sky} dot={false} strokeWidth={1.5} name="Left"/><Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={1.5} name="Right"/></LineChart></ResponsiveContainer></ChartCard>;
-            })()}
-            {hasF&&<ChartCard title="Force" h={180}><ResponsiveContainer><AreaChart data={shiftedForce}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="time" tick={{fill:C.muted,fontSize:9}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/><Tooltip content={Tt}/><Area type="monotone" dataKey="force" stroke={C.violet} fill={C.violet+"30"} strokeWidth={1.5} name="Force" dot={false}/></AreaChart></ResponsiveContainer></ChartCard>}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  TAB 1 — SKELETON
+  //  TAB 0 — SKELETON (merged with overview)
   // ════════════════════════════════════════════════════════════════════════════
   const renderSkeleton = () => {
     const mvnxFiles = activeJob?.mvnxFiles || [];
@@ -1012,7 +1010,7 @@ function Dashboard({ session }) {
     const frame = hasData ? mvnx.frames[Math.min(skelFrame, mvnx.frames.length-1)] : null;
     const positions = frame?.pos?.length ? frame.pos : REF_POS;
     const boneList  = mvnx?.bones?.length ? mvnx.bones : BONES;
-    const W=300, H=440;
+    const W=300, H=420;
     const pts = projectPos(positions, skelView, W, H);
     const ft = frame?.time || 0;
 
@@ -1020,210 +1018,421 @@ function Dashboard({ session }) {
     const lsfIdx = loadsolPairings[skelFileIdx] ?? skelLoadsolIdx;
     const lsf = loadsolFilesList[lsfIdx] || loadsolFilesList[0] || null;
     const hasLS = !!lsf?.data?.length;
-    const ff   = activeForce;
-    const hasF = !!ff?.data?.length;
+
+    const forceFilesList = activeJob?.forceFiles || [];
+    const blipTime = lsf?.blipTime;
+
+    // Active force event
+    const activeEvent = forceEvents.find(e => e.id === activeEventId) || null;
+    const averagedData = activeEvent ? computeAveraged(activeEvent, forceFilesList) : [];
+
+    const TYPE_OPTS = ['push','lift','pinch','pull','carry'];
+    const HAND_OPTS = [{v:'right',l:'Right'},{v:'left',l:'Left'},{v:'bilateral',l:'Both'}];
 
     if (filesLoading) return (
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:300,gap:14}}>
-        <Spinner size={32}/><div style={{fontSize:13,color:C.muted}}>Loading files…</div>
+        <Spinner size={32}/><div style={{fontSize:13,color:C.muted}}>{loadingMsg||"Loading files…"}</div>
       </div>
     );
 
+    // ── Force panel (right side when showForcePanel) ──────────────────────
+    const renderForcePanel = () => {
+      const updateEvent = (patch) => setForceEvents(prev =>
+        prev.map(e => e.id === activeEventId ? {...e, ...patch} : e));
+
+      const handleChartPointerDown = (e) => {
+        if (!activeEvent || !averagedData.length) return;
+        const container = fpChartRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        const plotLeft = 52, plotRight = rect.width - 8;
+        const plotWidth = plotRight - plotLeft;
+        const domainMax = averagedData[averagedData.length-1]?.time || 1;
+        const xFrac = Math.max(0, Math.min(1, (e.clientX - rect.left - plotLeft) / plotWidth));
+        const t = +(xFrac * domainMax).toFixed(3);
+        const near = averagedData.reduce((best, d) => Math.abs(d.time - t) < Math.abs(best.time - t) ? d : best, averagedData[0]);
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setFpDragState({startT: t, startF: near.force, plotLeft, plotWidth, domainMax, rect});
+      };
+
+      const handleChartPointerMove = (e) => {
+        if (!fpDragState || !activeEvent) return;
+        const xFrac = Math.max(0, (e.clientX - fpDragState.rect.left - fpDragState.plotLeft) / fpDragState.plotWidth);
+        const tEnd = +(xFrac * fpDragState.domainMax).toFixed(3);
+        const dur = +(Math.max(0, tEnd - fpDragState.startT)).toFixed(3);
+        updateEvent({ plateauT: fpDragState.startT, plateauF: fpDragState.startF, plateauDur: dur });
+      };
+
+      const handleChartPointerUp = () => setFpDragState(null);
+
+      const avgForEvent = activeEvent ? computeAveraged(activeEvent, forceFilesList) : [];
+      // Stride for display
+      const stride = Math.max(1, Math.floor(avgForEvent.length / 400));
+      const displayData = avgForEvent.filter((_,i) => i % stride === 0);
+
+      return (
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,display:"flex",flexDirection:"column",gap:10,overflow:"auto",maxHeight:"calc(100vh - 200px)"}}>
+          {/* Header */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{fontSize:13,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>Force Events</div>
+            <Btn small active onClick={()=>{
+              const id = `ev_${Date.now()}`;
+              const newEv = {id, label:`Event ${forceEvents.length+1}`, type:'push', hand:'right', tStart:0, fileIndices:[], plateauT:null, plateauF:null, plateauDur:0};
+              setForceEvents(prev=>[...prev, newEv]);
+              setActiveEventId(id);
+            }}>+ New</Btn>
+          </div>
+
+          {/* Event list */}
+          {forceEvents.length === 0 && (
+            <div style={{fontSize:11,color:C.muted,padding:"10px 0",textAlign:"center"}}>No events yet — click + New to create one.</div>
+          )}
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {forceEvents.map(ev=>(
+              <div key={ev.id} onClick={()=>setActiveEventId(ev.id)}
+                style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,cursor:"pointer",
+                  background:activeEventId===ev.id ? C.accent+"18" : C.bg,
+                  border:`1px solid ${activeEventId===ev.id ? C.accent+"60" : C.border}`}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <span style={{fontSize:12,fontWeight:600,color:activeEventId===ev.id?C.accent:C.text}}>{ev.label}</span>
+                  <span style={{fontSize:10,color:C.muted,marginLeft:8}}>{ev.type} · {ev.hand} · @{(ev.tStart||0).toFixed(2)}s · {(ev.fileIndices||[]).length} trial{(ev.fileIndices||[]).length!==1?"s":""}</span>
+                </div>
+                <Btn small danger onClick={e=>{e.stopPropagation();setForceEvents(prev=>prev.filter(x=>x.id!==ev.id));if(activeEventId===ev.id)setActiveEventId(null);}}>×</Btn>
+              </div>
+            ))}
+          </div>
+
+          {/* Event editor */}
+          {activeEvent && (
+            <>
+              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginTop:2}}>
+                <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Edit: {activeEvent.label}</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                  <div>
+                    <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Label</div>
+                    <input value={activeEvent.label}
+                      onChange={e=>updateEvent({label:e.target.value})}
+                      style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Type</div>
+                    <select value={activeEvent.type} onChange={e=>updateEvent({type:e.target.value})}
+                      style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
+                      {TYPE_OPTS.map(t=><option key={t} value={t}>{t[0].toUpperCase()+t.slice(1)}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Hand / Side</div>
+                    <select value={activeEvent.hand} onChange={e=>updateEvent({hand:e.target.value})}
+                      style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
+                      {HAND_OPTS.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Start in XSENS (s)</div>
+                    <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                      <input type="number" step="any" value={activeEvent.tStart}
+                        onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v))updateEvent({tStart:v});}}
+                        style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.accent,fontSize:12}}/>
+                      {blipTime&&<Btn small onClick={()=>updateEvent({tStart:+blipTime.toFixed(3)})}>⚡</Btn>}
+                    </div>
+                  </div>
+                </div>
+
+                {/* File assignment */}
+                <div style={{marginBottom:8}}>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:5}}>Trials ({(activeEvent.fileIndices||[]).length}/5) — select from uploaded force files:</div>
+                  {forceFilesList.length === 0 && (
+                    <div style={{fontSize:11,color:C.muted,marginBottom:6}}>
+                      No force files uploaded.{" "}
+                      <span style={{color:C.accent,cursor:"pointer"}} onClick={()=>openUpload("force")}>Upload now →</span>
+                    </div>
+                  )}
+                  <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                    {forceFilesList.map((f,fi)=>{
+                      const sel = (activeEvent.fileIndices||[]).includes(fi);
+                      return (
+                        <div key={fi} onClick={()=>{
+                          const cur = activeEvent.fileIndices||[];
+                          if (sel) updateEvent({fileIndices:cur.filter(x=>x!==fi)});
+                          else if (cur.length < 5) updateEvent({fileIndices:[...cur,fi]});
+                        }} style={{
+                          padding:"4px 10px",borderRadius:12,fontSize:11,cursor:"pointer",
+                          background:sel?C.violet+"25":"transparent",
+                          border:`1px solid ${sel?C.violet+"80":C.border}`,
+                          color:sel?C.violet:C.muted
+                        }}>{f.name.replace(/\.csv$/i,"")}</div>
+                      );
+                    })}
+                    <div onClick={()=>openUpload("force")} style={{
+                      padding:"4px 10px",borderRadius:12,fontSize:11,cursor:"pointer",
+                      border:`1px dashed ${C.border}`,color:C.muted
+                    }}>+ Upload</div>
+                  </div>
+                </div>
+
+                {/* Averaged chart with plateau drag */}
+                {displayData.length > 0 && (
+                  <>
+                    <div style={{fontSize:10,color:C.muted,marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <span>Averaged ({(activeEvent.fileIndices||[]).length} trial{(activeEvent.fileIndices||[]).length!==1?"s":""})</span>
+                      {activeEvent.plateauDur > 0 && (
+                        <span style={{color:C.emerald}}>
+                          Plateau: {activeEvent.plateauT?.toFixed(2)}s +{activeEvent.plateauDur.toFixed(2)}s @ {activeEvent.plateauF?.toFixed(0)}N
+                          {" "}<span style={{cursor:"pointer",color:C.rose}} onClick={()=>updateEvent({plateauT:null,plateauF:null,plateauDur:0})}>✕</span>
+                        </span>
+                      )}
+                    </div>
+                    <div style={{fontSize:10,color:C.muted,marginBottom:6,fontStyle:"italic"}}>Hold-drag on chart to extend a plateau from that point</div>
+                    <div ref={fpChartRef} style={{height:160,cursor:"crosshair",userSelect:"none"}}
+                      onPointerDown={handleChartPointerDown}
+                      onPointerMove={handleChartPointerMove}
+                      onPointerUp={handleChartPointerUp}
+                      onPointerLeave={handleChartPointerUp}>
+                      <ResponsiveContainer>
+                        <ComposedChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                          <XAxis dataKey="time" type="number" domain={["auto","auto"]}
+                            tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                          <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
+                          <Tooltip content={Tt}/>
+                          {activeEvent.plateauT != null && <ReferenceLine x={activeEvent.plateauT} stroke={C.emerald} strokeDasharray="4 2"/>}
+                          <ReferenceLine x={ft - (activeEvent.tStart||0)} stroke={C.amber} strokeWidth={1.5} strokeDasharray="3 2"/>
+                          <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Force"
+                            strokeDasharray={d=>d.plateau?"6 3":undefined}/>
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    {/* Per-file individual traces (faint) */}
+                    {(activeEvent.fileIndices||[]).length > 1 && (() => {
+                      const fileTraces = (activeEvent.fileIndices||[]).map(fi => {
+                        const f = forceFilesList[fi];
+                        if (!f?.data) return null;
+                        const s = Math.max(1, Math.floor(f.data.length/200));
+                        return f.data.filter((_,i)=>i%s===0);
+                      }).filter(Boolean);
+                      return (
+                        <div style={{height:80,marginTop:4}}>
+                          <ResponsiveContainer>
+                            <LineChart margin={{left:0,right:8,top:2,bottom:0}}>
+                              <XAxis type="number" dataKey="time" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="s"/>
+                              <YAxis tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="N" width={44}/>
+                              {fileTraces.map((d,i)=>(
+                                <Line key={i} data={d} type="monotone" dataKey="force"
+                                  stroke={CYCLE_COLORS[i%CYCLE_COLORS.length]} dot={false} strokeWidth={1} opacity={0.55} name={`T${i+1}`}/>
+                              ))}
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
+                {(activeEvent.fileIndices||[]).length === 0 && (
+                  <div style={{fontSize:11,color:C.muted,textAlign:"center",padding:"12px 0"}}>Select 1–5 trial files above to see the averaged curve.</div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+
+    // ── Main render ───────────────────────────────────────────────────────
     return (
       <div>
+        {/* File bar */}
         {activeJob && <FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
-        {mvnxFiles.length > 0 && (
-          <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}>
+
+        {/* Compact stats row */}
+        {activeJob && (
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:8,marginBottom:12}}>
+            <Stat label="Cycles"      value={mvnxFiles.length||"—"}                                     unit="files"/>
+            <Stat label="Duration"    value={mvnx?.duration?.toFixed(1)||"—"}                            unit="s"/>
+            <Stat label="GRF Peak R"  value={lsf?.stats?.rightMax?.toFixed(0)||"—"}                     unit="N"/>
+            <Stat label="GRF Peak L"  value={lsf?.stats?.leftMax?.toFixed(0)||"—"}                      unit="N"/>
+            <Stat label="Blip"        value={blipTime?.toFixed(3)||"—"}                                  unit="s" color={blipTime?C.amber:undefined}/>
+            <Stat label="Force Events" value={forceEvents.length||"—"}                                  unit=""/>
+          </div>
+        )}
+
+        {/* Cycle / LoadSOL selectors */}
+        {mvnxFiles.length > 1 && (
+          <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap",alignItems:"center"}}>
             <span style={{fontSize:12,color:C.muted}}>Cycle:</span>
             {mvnxFiles.map((f,i) => (
-              <Btn key={i} active={skelFileIdx===i} onClick={()=>{
+              <Btn key={i} small active={skelFileIdx===i} onClick={()=>{
                 setSkelFileIdx(i); setSkelFrame(0); setSkelPlaying(false);
                 const paired = loadsolPairings[i];
                 if (paired !== undefined) setSkelLoadsolIdx(paired);
-              }}>
-                {f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}
-              </Btn>
+              }}>{f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}</Btn>
             ))}
           </div>
         )}
         {loadsolFilesList.length > 1 && (
-          <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+          <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
             <span style={{fontSize:12,color:C.muted}}>LoadSOL:</span>
             {loadsolFilesList.map((f,i) => (
-              <Btn key={i} active={(loadsolPairings[skelFileIdx]??skelLoadsolIdx)===i} small onClick={()=>{
-                setSkelLoadsolIdx(i);
-                setLoadsolPairings(prev=>({...prev,[skelFileIdx]:i}));
-              }}>
-                {f.name.replace(/\.txt$/i,"")}
-              </Btn>
+              <Btn key={i} small active={(loadsolPairings[skelFileIdx]??skelLoadsolIdx)===i} onClick={()=>{
+                setSkelLoadsolIdx(i); setLoadsolPairings(prev=>({...prev,[skelFileIdx]:i}));
+              }}>{f.name.replace(/\.txt$/i,"")}</Btn>
             ))}
           </div>
         )}
 
-        <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:14,alignItems:"start"}}>
-          {/* SVG panel */}
-          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14}}>
-            <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:10}}>
-              {["front","side","top"].map(v=>(
-                <Btn key={v} active={skelView===v} onClick={()=>setSkelView(v)} small>{v[0].toUpperCase()+v.slice(1)}</Btn>
-              ))}
-            </div>
-            <svg width={W} height={H} style={{display:"block",margin:"0 auto"}}>
-              <rect width={W} height={H} fill={C.bg} rx={8}/>
-              {[0.25,0.5,0.75].map(p=>(
-                <line key={p} x1={0} y1={H*p} x2={W} y2={H*p} stroke={C.border} strokeWidth={0.5} strokeDasharray="4 4"/>
-              ))}
-              {pts.length > 0 && boneList.map(([a,b],i) => {
-                const pa=pts[a], pb=pts[b]; if (!pa||!pb) return null;
-                const la=mvnx?.segLabels?.[a]||"", lb=mvnx?.segLabels?.[b]||"";
-                const isR=/right/i.test(la)||/right/i.test(lb);
-                const isL=/left/i.test(la)||/left/i.test(lb);
-                return <line key={i} x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]}
-                  stroke={isR?C.sky:isL?C.rose:C.amber} strokeWidth={isR||isL?3:4} strokeLinecap="round"/>;
-              })}
-              {pts.map((pt,i) => {
-                if (!pt) return null;
-                const lbl = mvnx?.segLabels?.[i]||"";
-                return <circle key={i} cx={pt[0]} cy={pt[1]} r={/head/i.test(lbl)?7:4} fill={/head/i.test(lbl)?C.amber:C.accent} opacity={0.9}/>;
-              })}
-              {!hasData&&<text x={W/2} y={H-16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose — upload MVNX</text>}
-            </svg>
-            {hasData ? (
-              <div style={{marginTop:10}}>
-                <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:6,flexWrap:"wrap"}}>
-                  <Btn small onClick={()=>{setSkelFrame(0);setSkelPlaying(false);}}>⏮</Btn>
-                  <Btn small active={skelPlaying} onClick={()=>setSkelPlaying(p=>!p)}>{skelPlaying?"⏸":"▶"}</Btn>
-                  <Btn small onClick={()=>{setSkelPlaying(false);setSkelFrame(mvnx.frames.length-1);}}>⏭</Btn>
-                  {[0.25,0.5,1,2,4].map(s=>(
-                    <Btn key={s} small active={skelSpeed===s} onClick={()=>setSkelSpeed(s)}>{s}×</Btn>
-                  ))}
-                </div>
-                <input type="range" min={0} max={mvnx.frames.length-1} value={skelFrame}
-                  onChange={e=>setSkelFrame(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted,marginTop:3}}>
-                  <span>t={ft.toFixed(2)}s</span>
-                  <span>{skelFrame+1}/{mvnx.frames.length}</span>
-                  <span>{mvnx.duration?.toFixed(1)}s@{mvnx.frameRate}Hz</span>
-                </div>
+        {/* Two-column layout: skeleton | right panel */}
+        {!activeJobId ? (
+          <EmptyState icon="🗂" title="No job selected" detail="Create or select a job to get started."
+            action={<Btn active onClick={()=>setShowJobModal(true)}>Create Job</Btn>}/>
+        ) : (
+          <div style={{display:"grid",gridTemplateColumns:showForcePanel?"300px 1fr":"300px 1fr",gap:14,alignItems:"start"}}>
+
+            {/* ── Skeleton column ── */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14}}>
+              <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:10}}>
+                {["front","side","top"].map(v=>(
+                  <Btn key={v} active={skelView===v} small onClick={()=>setSkelView(v)}>{v[0].toUpperCase()+v.slice(1)}</Btn>
+                ))}
               </div>
-            ) : (
-              <div style={{textAlign:"center",marginTop:14}}>
-                <Btn active onClick={()=>openUpload("mvnx")}>Upload MVNX</Btn>
-              </div>
-            )}
-          </div>
+              <svg width={W} height={H} style={{display:"block",margin:"0 auto"}}>
+                <rect width={W} height={H} fill={C.bg} rx={8}/>
+                {[0.25,0.5,0.75].map(p=>(
+                  <line key={p} x1={0} y1={H*p} x2={W} y2={H*p} stroke={C.border} strokeWidth={0.5} strokeDasharray="4 4"/>
+                ))}
+                {pts.length > 0 && boneList.map(([a,b],i) => {
+                  const pa=pts[a], pb=pts[b]; if (!pa||!pb) return null;
+                  const la=mvnx?.segLabels?.[a]||"", lb=mvnx?.segLabels?.[b]||"";
+                  const isR=/right/i.test(la)||/right/i.test(lb);
+                  const isL=/left/i.test(la)||/left/i.test(lb);
+                  return <line key={i} x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]}
+                    stroke={isR?C.sky:isL?C.rose:C.amber} strokeWidth={isR||isL?3:4} strokeLinecap="round"/>;
+                })}
+                {pts.map((pt,i) => {
+                  if (!pt) return null;
+                  const lbl = mvnx?.segLabels?.[i]||"";
+                  return <circle key={i} cx={pt[0]} cy={pt[1]} r={/head/i.test(lbl)?7:4}
+                    fill={/head/i.test(lbl)?C.amber:C.accent} opacity={0.9}/>;
+                })}
+                {!hasData&&<text x={W/2} y={H-16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose — upload MVNX</text>}
+              </svg>
 
-          {/* Right column */}
-          <div>
-            {jointPanels.map((panel,pi) => {
-              const kj   = KEY_JOINTS[panel.jointKey];
-              const data = panelData[pi] || [];
-              // Current angle values for live readout
-              const ji = hasData ? mvnx.jointLabels?.findIndex(l => kj.r.test(l)) : -1;
-              const curAngles = (ji >= 0 && frame?.ja) ? {
-                LB: frame.ja[ji*3]?.toFixed(1),    // Z = Lat Bend
-                AR: frame.ja[ji*3+1]?.toFixed(1),  // X = Axial Rot
-                FE: frame.ja[ji*3+2]?.toFixed(1),  // Y = Flex/Ext
-              } : null;
-              return (
-                <ChartCard key={pi} h={180} title={
-                  <span>{kj.lbl}{curAngles&&panel.planes>0&&(
-                    <span style={{fontSize:10,fontWeight:400,color:C.muted,marginLeft:8}}>
-                      {[0,1,2].filter(pli=>panel.planes&(1<<pli)).map(pli=>`${PLANE_LABELS[pli]}: ${curAngles[PLANE_LABELS[pli]]}°`).join("  ")}
-                    </span>
-                  )}</span>
-                }
-                  action={
-                    <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                      {PLANE_LABELS.map((pl,pli) => (
-                        <Btn key={pl} small active={!!(panel.planes & (1<<pli))}
-                          onClick={()=>setJointPanels(prev=>prev.map((p,i)=>
-                            i!==pi ? p : {...p, planes: p.planes ^ (1<<pli)}
-                          ))}>
-                          {pl}
-                        </Btn>
-                      ))}
-                      <select value={panel.jointKey}
-                        onChange={e=>setJointPanels(prev=>prev.map((p,i)=>i===pi?{...p,jointKey:+e.target.value}:p))}
-                        style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 4px",color:C.muted,fontSize:10,marginLeft:4}}>
-                        {KEY_JOINTS.map((kj,kji)=><option key={kji} value={kji}>{kj.lbl}</option>)}
-                      </select>
-                      {jointPanels.length>1&&<Btn small danger onClick={()=>setJointPanels(prev=>prev.filter((_,i)=>i!==pi))}>×</Btn>}
-                    </div>
-                  }>
-                  <ResponsiveContainer>
-                    <LineChart data={data}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                      <XAxis dataKey="t" type="number" domain={[0, +(mvnx?.duration||0).toFixed(2)]}
-                        tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
-                      <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/>
-                      <Tooltip content={Tt}/>
-                      <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
-                      <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
-                      {PLANE_LABELS.map((pl,pli)=>!!(panel.planes & (1<<pli))&&(
-                        <Line key={pl} type="monotone" dataKey={pl} stroke={PLANE_COLORS[pli]}
-                          dot={false} strokeWidth={1.5} name={PLANE_NAMES[pli]}/>
-                      ))}
-                      {data.length>0&&(panel.planes&(panel.planes-1))!==0&&<Legend wrapperStyle={{fontSize:10}}/>}
-                    </LineChart>
-                  </ResponsiveContainer>
-                </ChartCard>
-              );
-            })}
-            <div style={{marginBottom:12}}>
-              <Btn small onClick={()=>setJointPanels(prev=>[...prev,{jointKey:0,planes:1}])}>+ Add Joint Panel</Btn>
-            </div>
-
-            {hasLS&&(()=>{
-              // Clip LoadSOL to blip time so t=0 aligns with XSENS start
-              const clipped = lsf.blipTime != null
-                ? lsf.data.filter(d => d.time >= lsf.blipTime).map(d => ({...d, time: +(d.time - lsf.blipTime).toFixed(3)}))
-                : lsf.data;
-              const stride = Math.max(1, Math.floor(clipped.length/200));
-              const d = clipped.filter((_,i) => i%stride===0);
-              return (
-                <ChartCard title="LoadSOL GRF (clipped to XSENS start)" h={160}>
-                  <ResponsiveContainer><LineChart data={d}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                    <XAxis dataKey="time" type="number" domain={[0,"auto"]}
-                      tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
-                    <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/>
-                    <Tooltip content={Tt}/>
-                    <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
-                    <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={1.5} name="L"/>
-                    <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={1.5} name="R"/>
-                  </LineChart></ResponsiveContainer>
-                </ChartCard>
-              );
-            })()}
-
-            {hasF&&(
-              <ChartCard title="Force (aligned to skeleton)" h={200}
-                action={
-                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    <span style={{fontSize:10,color:C.muted}}>offset:</span>
-                    <input type="number" step="any" value={forceOffset}
-                      onChange={e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)) setForceOffset(v); }}
-                      style={{width:64,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 6px",color:C.accent,fontSize:11,textAlign:"center"}}/>
-                    <span style={{fontSize:10,color:C.muted}}>s</span>
-                    <Btn small onClick={()=>setForceOffset(0)}>0</Btn>
+              {hasData ? (
+                <div style={{marginTop:10}}>
+                  <div style={{display:"flex",gap:5,justifyContent:"center",marginBottom:6,flexWrap:"wrap"}}>
+                    <Btn small onClick={()=>{setSkelFrame(0);setSkelPlaying(false);}}>⏮</Btn>
+                    <Btn small active={skelPlaying} onClick={()=>setSkelPlaying(p=>!p)}>{skelPlaying?"⏸":"▶"}</Btn>
+                    <Btn small onClick={()=>{setSkelPlaying(false);setSkelFrame(mvnx.frames.length-1);}}>⏭</Btn>
+                    {[0.25,0.5,1,2,4].map(s=>(
+                      <Btn key={s} small active={skelSpeed===s} onClick={()=>setSkelSpeed(s)}>{s}×</Btn>
+                    ))}
                   </div>
-                }>
-                <ResponsiveContainer>
-                  <ComposedChart>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                    <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
-                    <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/>
-                    <Tooltip content={Tt}/>
-                    <ReferenceLine x={+ft.toFixed(3)} stroke={C.amber} strokeWidth={2} strokeDasharray="3 2"/>
-                    <Line data={shiftedForce} type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={1.5} name="Force"/>
-                    {extendedForce&&<Line data={extendedForce} type="monotone" dataKey="force" stroke={C.emerald} dot={false} strokeWidth={1.5} strokeDasharray="6 2" name="Extended"/>}
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </ChartCard>
+                  <input type="range" min={0} max={mvnx.frames.length-1} value={skelFrame}
+                    onChange={e=>setSkelFrame(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted,marginTop:3}}>
+                    <span>t={ft.toFixed(2)}s</span>
+                    <span>{skelFrame+1}/{mvnx.frames.length}</span>
+                    <span>{mvnx.duration?.toFixed(1)}s@{mvnx.frameRate}Hz</span>
+                  </div>
+                </div>
+              ) : (
+                <div style={{textAlign:"center",marginTop:14}}>
+                  <Btn active onClick={()=>openUpload("mvnx")}>Upload MVNX</Btn>
+                </div>
+              )}
+
+              {/* Force toggle button */}
+              <div style={{marginTop:12,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
+                <Btn active={showForcePanel} onClick={()=>setShowForcePanel(p=>!p)}
+                  style={{width:"100%",justifyContent:"center",textAlign:"center"}}>
+                  {showForcePanel ? "✕ Close Force Panel" : "⚡ Force"}
+                </Btn>
+              </div>
+            </div>
+
+            {/* ── Right column: force panel OR joint panels ── */}
+            {showForcePanel ? renderForcePanel() : (
+              <div>
+                {jointPanels.map((panel,pi) => {
+                  const kj   = KEY_JOINTS[panel.jointKey];
+                  const data = panelData[pi] || [];
+                  const ji = hasData ? mvnx.jointLabels?.findIndex(l => kj.r.test(l)) : -1;
+                  const curAngles = (ji >= 0 && frame?.ja) ? {
+                    LB: frame.ja[ji*3]?.toFixed(1),
+                    AR: frame.ja[ji*3+1]?.toFixed(1),
+                    FE: frame.ja[ji*3+2]?.toFixed(1),
+                  } : null;
+                  return (
+                    <ChartCard key={pi} h={180} title={
+                      <span>{kj.lbl}{curAngles&&panel.planes>0&&(
+                        <span style={{fontSize:10,fontWeight:400,color:C.muted,marginLeft:8}}>
+                          {[0,1,2].filter(pli=>panel.planes&(1<<pli)).map(pli=>`${PLANE_LABELS[pli]}: ${curAngles[PLANE_LABELS[pli]]}°`).join("  ")}
+                        </span>
+                      )}</span>
+                    } action={
+                      <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                        {PLANE_LABELS.map((pl,pli) => (
+                          <Btn key={pl} small active={!!(panel.planes & (1<<pli))}
+                            onClick={()=>setJointPanels(prev=>prev.map((p,i)=>
+                              i!==pi ? p : {...p, planes: p.planes ^ (1<<pli)}))}>
+                            {pl}
+                          </Btn>
+                        ))}
+                        <select value={panel.jointKey}
+                          onChange={e=>setJointPanels(prev=>prev.map((p,i)=>i===pi?{...p,jointKey:+e.target.value}:p))}
+                          style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 4px",color:C.muted,fontSize:10,marginLeft:4}}>
+                          {KEY_JOINTS.map((kj,kji)=><option key={kji} value={kji}>{kj.lbl}</option>)}
+                        </select>
+                        {jointPanels.length>1&&<Btn small danger onClick={()=>setJointPanels(prev=>prev.filter((_,i)=>i!==pi))}>×</Btn>}
+                      </div>
+                    }>
+                      <ResponsiveContainer>
+                        <LineChart data={data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                          <XAxis dataKey="t" type="number" domain={[0, +(mvnx?.duration||0).toFixed(2)]}
+                            tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                          <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/>
+                          <Tooltip content={Tt}/>
+                          <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
+                          <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
+                          {PLANE_LABELS.map((pl,pli)=>!!(panel.planes & (1<<pli))&&(
+                            <Line key={pl} type="monotone" dataKey={pl} stroke={PLANE_COLORS[pli]}
+                              dot={false} strokeWidth={1.5} name={PLANE_NAMES[pli]}/>
+                          ))}
+                          {data.length>0&&(panel.planes&(panel.planes-1))!==0&&<Legend wrapperStyle={{fontSize:10}}/>}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </ChartCard>
+                  );
+                })}
+                <div style={{marginBottom:12}}>
+                  <Btn small onClick={()=>setJointPanels(prev=>[...prev,{jointKey:0,planes:4}])}>+ Add Joint Panel</Btn>
+                </div>
+
+                {hasLS&&(()=>{
+                  const clipped = lsf.blipTime != null
+                    ? lsf.data.filter(d => d.time >= lsf.blipTime).map(d => ({...d, time: +(d.time - lsf.blipTime).toFixed(3)}))
+                    : lsf.data;
+                  const stride = Math.max(1, Math.floor(clipped.length/200));
+                  const d = clipped.filter((_,i) => i%stride===0);
+                  return (
+                    <ChartCard title="LoadSOL GRF (aligned)" h={150}>
+                      <ResponsiveContainer><LineChart data={d}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                        <XAxis dataKey="time" type="number" domain={[0,"auto"]}
+                          tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                        <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/>
+                        <Tooltip content={Tt}/>
+                        <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
+                        <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={1.5} name="L"/>
+                        <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={1.5} name="R"/>
+                      </LineChart></ResponsiveContainer>
+                    </ChartCard>
+                  );
+                })()}
+              </div>
             )}
           </div>
-        </div>
+        )}
       </div>
     );
   };
@@ -1837,7 +2046,7 @@ function Dashboard({ session }) {
   // ════════════════════════════════════════════════════════════════════════════
   //  ROOT RENDER
   // ════════════════════════════════════════════════════════════════════════════
-  const panels = [renderOverview,renderSkeleton,renderCycles,renderLoadSOL,renderForces,renderDynamics,renderJobs,renderPipeline];
+  const panels = [renderSkeleton,renderCycles,renderLoadSOL,renderForces,renderDynamics,renderJobs,renderPipeline];
   return (
     <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
       <div style={{background:`linear-gradient(135deg,${C.bg},${C.card})`,borderBottom:`1px solid ${C.border}`,padding:"14px 24px"}}>
