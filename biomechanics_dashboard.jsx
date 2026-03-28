@@ -2318,13 +2318,18 @@ function Dashboard({ session }) {
         </div>
       </div>
       {saveError && (
-        <div style={{background:"#7f1d1d",borderBottom:`1px solid #dc2626`,padding:"8px 24px",fontSize:12,color:"#fca5a5",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span>⚠ Settings save failed: {saveError} — run the SQL below in Supabase to fix:
-            <code style={{marginLeft:8,background:"rgba(0,0,0,.3)",padding:"2px 6px",borderRadius:3,fontSize:11}}>
-              ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS force_events jsonb DEFAULT '[]'; ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS force_file_sets jsonb DEFAULT '&#123;&#125;';
-            </code>
-          </span>
-          <span style={{cursor:"pointer",marginLeft:12,opacity:.7}} onClick={()=>setSaveError(null)}>✕</span>
+        <div style={{background:"#7f1d1d",borderBottom:`1px solid #dc2626`,padding:"10px 24px",fontSize:12,color:"#fca5a5"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span style={{fontWeight:600}}>⚠ Settings save failed: {saveError}</span>
+            <span style={{cursor:"pointer",opacity:.7,marginLeft:12}} onClick={()=>setSaveError(null)}>✕</span>
+          </div>
+          <div style={{marginBottom:4}}>Run this in <strong>Supabase → SQL Editor</strong> to create all required columns:</div>
+          <pre style={{background:"rgba(0,0,0,.4)",padding:"8px 10px",borderRadius:4,fontSize:11,margin:0,overflowX:"auto",userSelect:"all"}}>{`ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS extend_duration numeric DEFAULT 0;
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS force_blocks jsonb DEFAULT '[]';
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS joint_panels jsonb DEFAULT '[]';
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS loadsol_pairings jsonb DEFAULT '{}';
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS body_mass numeric DEFAULT 75;
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS updated_at timestamptz;`}</pre>
         </div>
       )}
       <div style={{display:"flex",gap:4,padding:"10px 24px",borderBottom:`1px solid ${C.border}`,background:C.card,overflowX:"auto"}}>
