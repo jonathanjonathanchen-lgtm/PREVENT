@@ -330,6 +330,21 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
   return results;
 }
 
+// ── Force direction → SVG vector lookup (per skeleton view) ──────────────────
+// World axes: XSENS Z-up frame → x=forward, y=left, z=up
+// SVG: x increases right, y increases down
+// Each entry: [dx, dy] unit vector in SVG space for the given world axis direction
+const DIR_SVG = {
+  //          front-view         side-view         top-view
+  //          (proj: y,z)        (proj: x,z)       (proj: x,y → y inverted for SVG)
+  "+x": { front:[ 0,-1], side:[ 1, 0], top:[ 1, 0] }, // forward → up in front, right in side, right in top
+  "-x": { front:[ 0, 1], side:[-1, 0], top:[-1, 0] },
+  "+y": { front:[-1, 0], side:[ 0, 0], top:[ 0,-1] }, // left → left in front, none in side, up in top
+  "-y": { front:[ 1, 0], side:[ 0, 0], top:[ 0, 1] },
+  "+z": { front:[ 0,-1], side:[ 0,-1], top:[ 0, 0] }, // up → up in both front/side, none in top
+  "-z": { front:[ 0, 1], side:[ 0, 1], top:[ 0, 0] },
+};
+
 // ── Force Event: average N trials + optional plateau extension ───────────────
 function computeAveraged(event, forceFiles) {
   const files = (event.fileIndices || []).map(i => forceFiles[i]).filter(f => f?.data?.length);
@@ -348,11 +363,21 @@ function computeAveraged(event, forceFiles) {
     const vals = files.map(f => interp1(f.data, t));
     base.push({ time: +t.toFixed(3), force: +(vals.reduce((a,b) => a+b, 0) / vals.length).toFixed(1) });
   }
+  // Trim: crop start and/or cap duration, then re-zero time
+  const trimStart = event.trimStart || 0;
+  const trimDur   = event.trimDur   ?? null;
+  let result = base;
+  if (trimStart > 0 || trimDur != null) {
+    const tEnd = trimDur != null ? trimStart + trimDur : Infinity;
+    result = result
+      .filter(d => d.time >= trimStart - 1e-9 && d.time <= tEnd + 1e-9)
+      .map(d => ({...d, time: +(d.time - trimStart).toFixed(3)}));
+  }
   // Plateau extension: from plateauT, hold plateauF for plateauDur seconds
   const { plateauT, plateauF, plateauDur } = event;
   if (plateauT != null && plateauF != null && (plateauDur || 0) > 0) {
-    const splitIdx = base.findIndex(d => d.time >= plateauT);
-    const pre  = splitIdx >= 0 ? base.slice(0, splitIdx) : base;
+    const splitIdx = result.findIndex(d => d.time >= plateauT);
+    const pre  = splitIdx >= 0 ? result.slice(0, splitIdx) : result;
     const nExt = Math.round(plateauDur / dt);
     const ext  = Array.from({length: nExt}, (_,i) => ({
       time: +(plateauT + (i+1) * dt).toFixed(3),
@@ -361,7 +386,7 @@ function computeAveraged(event, forceFiles) {
     }));
     return [...pre, ...ext];
   }
-  return base;
+  return result;
 }
 
 // ── Skeleton projection (XSENS Z-up) ─────────────────────────────────────────
@@ -626,8 +651,8 @@ function Dashboard({ session }) {
   // [{id,label,type,hand,tStart,fileIndices[],plateauT,plateauF,plateauDur}]
   const [activeEventId,  setActiveEventId]  = useState(null);
   const [showForcePanel, setShowForcePanel] = useState(false);
-  // Plateau drag interaction (chart in force panel)
-  const [fpDragState,    setFpDragState]    = useState(null);
+  // Plateau: double-click a point → modal to enter duration
+  const [plateauModal,   setPlateauModal]   = useState(null); // {t, f, durStr}
   const fpChartRef                          = useRef(null);
 
   // Forces / settings
@@ -911,8 +936,17 @@ function Dashboard({ session }) {
       if (type === "force")   return { ...j, forceFiles: j.forceFiles.filter((_,i) => i !== idx) };
       return j;
     }));
-    // Clamp activeForceIdx if the removed file was at or beyond current idx
-    if (type === "force") setActiveForceIdx(prev => Math.max(0, Math.min(prev, (job.forceFiles.length - 2))));
+    if (type === "force") {
+      // Clamp activeForceIdx
+      setActiveForceIdx(prev => Math.max(0, Math.min(prev, job.forceFiles.length - 2)));
+      // Remove deleted index from every event's fileIndices; shift down indices above it
+      setForceEvents(prev => prev.map(ev => ({
+        ...ev,
+        fileIndices: (ev.fileIndices || [])
+          .filter(i => i !== idx)
+          .map(i => i > idx ? i - 1 : i),
+      })));
+    }
   }, [activeJobId, jobs]);
 
   // ── Skeleton animation ────────────────────────────────────────────────────
@@ -1035,38 +1069,41 @@ function Dashboard({ session }) {
       </div>
     );
 
+    // Direction options for force vector
+    const DIR_OPTS = [
+      {v:'auto',  l:'Auto (hand axis)'},
+      {v:'+x',    l:'Forward (+X)'},
+      {v:'-x',    l:'Backward (−X)'},
+      {v:'+y',    l:'Left (+Y)'},
+      {v:'-y',    l:'Right (−Y)'},
+      {v:'+z',    l:'Up (+Z)'},
+      {v:'-z',    l:'Down (−Z)'},
+    ];
+
     // ── Force panel (right side when showForcePanel) ──────────────────────
     const renderForcePanel = () => {
       const updateEvent = (patch) => setForceEvents(prev =>
         prev.map(e => e.id === activeEventId ? {...e, ...patch} : e));
 
-      const handleChartPointerDown = (e) => {
+      // Double-click on chart → open plateau extension modal
+      const handleChartDblClick = (e) => {
         if (!activeEvent || !averagedData.length) return;
         const container = fpChartRef.current;
         if (!container) return;
         const rect = container.getBoundingClientRect();
-        const plotLeft = 52, plotRight = rect.width - 8;
-        const plotWidth = plotRight - plotLeft;
+        const plotLeft = 52, plotWidth = rect.width - 8 - plotLeft;
         const domainMax = averagedData[averagedData.length-1]?.time || 1;
         const xFrac = Math.max(0, Math.min(1, (e.clientX - rect.left - plotLeft) / plotWidth));
         const t = +(xFrac * domainMax).toFixed(3);
-        const near = averagedData.reduce((best, d) => Math.abs(d.time - t) < Math.abs(best.time - t) ? d : best, averagedData[0]);
-        e.currentTarget.setPointerCapture(e.pointerId);
-        setFpDragState({startT: t, startF: near.force, plotLeft, plotWidth, domainMax, rect});
+        const near = averagedData.reduce((best, d) =>
+          Math.abs(d.time - t) < Math.abs(best.time - t) ? d : best, averagedData[0]);
+        setPlateauModal({t: near.time, f: near.force, durStr: activeEvent.plateauDur > 0 ? String(activeEvent.plateauDur) : '1'});
       };
 
-      const handleChartPointerMove = (e) => {
-        if (!fpDragState || !activeEvent) return;
-        const xFrac = Math.max(0, (e.clientX - fpDragState.rect.left - fpDragState.plotLeft) / fpDragState.plotWidth);
-        const tEnd = +(xFrac * fpDragState.domainMax).toFixed(3);
-        const dur = +(Math.max(0, tEnd - fpDragState.startT)).toFixed(3);
-        updateEvent({ plateauT: fpDragState.startT, plateauF: fpDragState.startF, plateauDur: dur });
-      };
-
-      const handleChartPointerUp = () => setFpDragState(null);
+      // Valid trial count (indices that actually exist in forceFilesList)
+      const validTrials = (activeEvent?.fileIndices||[]).filter(i => i < forceFilesList.length).length;
 
       const avgForEvent = activeEvent ? computeAveraged(activeEvent, forceFilesList) : [];
-      // Stride for display
       const stride = Math.max(1, Math.floor(avgForEvent.length / 400));
       const displayData = avgForEvent.filter((_,i) => i % stride === 0);
 
@@ -1077,7 +1114,9 @@ function Dashboard({ session }) {
             <div style={{fontSize:13,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>Force Events</div>
             <Btn small active onClick={()=>{
               const id = `ev_${Date.now()}`;
-              const newEv = {id, label:`Event ${forceEvents.length+1}`, type:'push', hand:'right', tStart:0, fileIndices:[], plateauT:null, plateauF:null, plateauDur:0};
+              const newEv = {id, label:`Event ${forceEvents.length+1}`, type:'push', hand:'right',
+                direction:'auto', tStart:0, fileIndices:[], trimStart:0, trimDur:null,
+                plateauT:null, plateauF:null, plateauDur:0};
               setForceEvents(prev=>[...prev, newEv]);
               setActiveEventId(id);
             }}>+ New</Btn>
@@ -1088,151 +1127,220 @@ function Dashboard({ session }) {
             <div style={{fontSize:11,color:C.muted,padding:"10px 0",textAlign:"center"}}>No events yet — click + New to create one.</div>
           )}
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            {forceEvents.map(ev=>(
-              <div key={ev.id} onClick={()=>setActiveEventId(ev.id)}
-                style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,cursor:"pointer",
-                  background:activeEventId===ev.id ? C.accent+"18" : C.bg,
-                  border:`1px solid ${activeEventId===ev.id ? C.accent+"60" : C.border}`}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <span style={{fontSize:12,fontWeight:600,color:activeEventId===ev.id?C.accent:C.text}}>{ev.label}</span>
-                  <span style={{fontSize:10,color:C.muted,marginLeft:8}}>{ev.type} · {ev.hand} · @{(ev.tStart||0).toFixed(2)}s · {(ev.fileIndices||[]).length} trial{(ev.fileIndices||[]).length!==1?"s":""}</span>
+            {forceEvents.map(ev=>{
+              const nTrials = (ev.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
+              return (
+                <div key={ev.id} onClick={()=>setActiveEventId(ev.id)}
+                  style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,cursor:"pointer",
+                    background:activeEventId===ev.id ? C.accent+"18" : C.bg,
+                    border:`1px solid ${activeEventId===ev.id ? C.accent+"60" : C.border}`}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <span style={{fontSize:12,fontWeight:600,color:activeEventId===ev.id?C.accent:C.text}}>{ev.label}</span>
+                    <span style={{fontSize:10,color:C.muted,marginLeft:8}}>
+                      {ev.type} · {ev.hand} · @{(ev.tStart||0).toFixed(2)}s · {nTrials}/5 trials
+                    </span>
+                  </div>
+                  <Btn small danger onClick={e=>{e.stopPropagation();setForceEvents(prev=>prev.filter(x=>x.id!==ev.id));if(activeEventId===ev.id)setActiveEventId(null);}}>×</Btn>
                 </div>
-                <Btn small danger onClick={e=>{e.stopPropagation();setForceEvents(prev=>prev.filter(x=>x.id!==ev.id));if(activeEventId===ev.id)setActiveEventId(null);}}>×</Btn>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Event editor */}
           {activeEvent && (
-            <>
-              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginTop:2}}>
-                <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Edit: {activeEvent.label}</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-                  <div>
-                    <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Label</div>
-                    <input value={activeEvent.label}
-                      onChange={e=>updateEvent({label:e.target.value})}
-                      style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
-                  </div>
-                  <div>
-                    <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Type</div>
-                    <select value={activeEvent.type} onChange={e=>updateEvent({type:e.target.value})}
-                      style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
-                      {TYPE_OPTS.map(t=><option key={t} value={t}>{t[0].toUpperCase()+t.slice(1)}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Hand / Side</div>
-                    <select value={activeEvent.hand} onChange={e=>updateEvent({hand:e.target.value})}
-                      style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
-                      {HAND_OPTS.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Start in XSENS (s)</div>
-                    <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                      <input type="number" step="any" value={activeEvent.tStart}
-                        onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v))updateEvent({tStart:v});}}
-                        style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.accent,fontSize:12}}/>
-                      {blipTime&&<Btn small onClick={()=>updateEvent({tStart:+blipTime.toFixed(3)})}>⚡</Btn>}
-                    </div>
+            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginTop:2}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Edit: {activeEvent.label}</div>
+
+              {/* Row 1: label, type, hand, direction */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Label</div>
+                  <input value={activeEvent.label} onChange={e=>updateEvent({label:e.target.value})}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Type</div>
+                  <select value={activeEvent.type} onChange={e=>updateEvent({type:e.target.value})}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
+                    {TYPE_OPTS.map(t=><option key={t} value={t}>{t[0].toUpperCase()+t.slice(1)}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Hand / Side</div>
+                  <select value={activeEvent.hand} onChange={e=>updateEvent({hand:e.target.value})}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
+                    {HAND_OPTS.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Force Direction</div>
+                  <select value={activeEvent.direction||'auto'} onChange={e=>updateEvent({direction:e.target.value})}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 6px",color:C.text,fontSize:12}}>
+                    {DIR_OPTS.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Row 2: tStart + trim */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Start in XSENS (s)</div>
+                  <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                    <input type="number" step="any" value={activeEvent.tStart}
+                      onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v))updateEvent({tStart:v});}}
+                      style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.accent,fontSize:12}}/>
+                    {/* Clock: snap to current skeleton frame */}
+                    <button onClick={()=>updateEvent({tStart:+ft.toFixed(3)})} title="Set to current frame time"
+                      style={{background:"none",border:`1px solid ${C.border}`,borderRadius:4,cursor:"pointer",padding:"3px 7px",fontSize:14,color:C.muted,lineHeight:1}}>
+                      🕐
+                    </button>
                   </div>
                 </div>
-
-                {/* File assignment */}
-                <div style={{marginBottom:8}}>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:5}}>Trials ({(activeEvent.fileIndices||[]).length}/5) — select from uploaded force files:</div>
-                  {forceFilesList.length === 0 && (
-                    <div style={{fontSize:11,color:C.muted,marginBottom:6}}>
-                      No force files uploaded.{" "}
-                      <span style={{color:C.accent,cursor:"pointer"}} onClick={()=>openUpload("force")}>Upload now →</span>
-                    </div>
-                  )}
-                  <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-                    {forceFilesList.map((f,fi)=>{
-                      const sel = (activeEvent.fileIndices||[]).includes(fi);
-                      return (
-                        <div key={fi} onClick={()=>{
-                          const cur = activeEvent.fileIndices||[];
-                          if (sel) updateEvent({fileIndices:cur.filter(x=>x!==fi)});
-                          else if (cur.length < 5) updateEvent({fileIndices:[...cur,fi]});
-                        }} style={{
-                          padding:"4px 10px",borderRadius:12,fontSize:11,cursor:"pointer",
-                          background:sel?C.violet+"25":"transparent",
-                          border:`1px solid ${sel?C.violet+"80":C.border}`,
-                          color:sel?C.violet:C.muted
-                        }}>{f.name.replace(/\.csv$/i,"")}</div>
-                      );
-                    })}
-                    <div onClick={()=>openUpload("force")} style={{
-                      padding:"4px 10px",borderRadius:12,fontSize:11,cursor:"pointer",
-                      border:`1px dashed ${C.border}`,color:C.muted
-                    }}>+ Upload</div>
-                  </div>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Trim start (s)</div>
+                  <input type="number" step="any" min={0} value={activeEvent.trimStart||0}
+                    onChange={e=>{const v=parseFloat(e.target.value);updateEvent({trimStart:isNaN(v)?0:Math.max(0,v)});}}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
                 </div>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3}}>Duration cap (s)</div>
+                  <input type="number" step="any" min={0}
+                    value={activeEvent.trimDur ?? ''}
+                    placeholder="full"
+                    onChange={e=>{const v=parseFloat(e.target.value);updateEvent({trimDur:isNaN(v)||v<=0?null:v});}}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 8px",color:C.text,fontSize:12,boxSizing:"border-box"}}/>
+                </div>
+              </div>
 
-                {/* Averaged chart with plateau drag */}
-                {displayData.length > 0 && (
-                  <>
-                    <div style={{fontSize:10,color:C.muted,marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <span>Averaged ({(activeEvent.fileIndices||[]).length} trial{(activeEvent.fileIndices||[]).length!==1?"s":""})</span>
-                      {activeEvent.plateauDur > 0 && (
-                        <span style={{color:C.emerald}}>
-                          Plateau: {activeEvent.plateauT?.toFixed(2)}s +{activeEvent.plateauDur.toFixed(2)}s @ {activeEvent.plateauF?.toFixed(0)}N
-                          {" "}<span style={{cursor:"pointer",color:C.rose}} onClick={()=>updateEvent({plateauT:null,plateauF:null,plateauDur:0})}>✕</span>
-                        </span>
-                      )}
-                    </div>
-                    <div style={{fontSize:10,color:C.muted,marginBottom:6,fontStyle:"italic"}}>Hold-drag on chart to extend a plateau from that point</div>
-                    <div ref={fpChartRef} style={{height:160,cursor:"crosshair",userSelect:"none"}}
-                      onPointerDown={handleChartPointerDown}
-                      onPointerMove={handleChartPointerMove}
-                      onPointerUp={handleChartPointerUp}
-                      onPointerLeave={handleChartPointerUp}>
-                      <ResponsiveContainer>
-                        <ComposedChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}>
-                          <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                          <XAxis dataKey="time" type="number" domain={["auto","auto"]}
-                            tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
-                          <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
-                          <Tooltip content={Tt}/>
-                          {activeEvent.plateauT != null && <ReferenceLine x={activeEvent.plateauT} stroke={C.emerald} strokeDasharray="4 2"/>}
-                          <ReferenceLine x={ft - (activeEvent.tStart||0)} stroke={C.amber} strokeWidth={1.5} strokeDasharray="3 2"/>
-                          <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Force"
-                            strokeDasharray={d=>d.plateau?"6 3":undefined}/>
-                        </ComposedChart>
-                      </ResponsiveContainer>
-                    </div>
-                    {/* Per-file individual traces (faint) */}
-                    {(activeEvent.fileIndices||[]).length > 1 && (() => {
-                      const fileTraces = (activeEvent.fileIndices||[]).map(fi => {
+              {/* File assignment */}
+              <div style={{marginBottom:8}}>
+                <div style={{fontSize:10,color:C.muted,marginBottom:5}}>
+                  Trials ({validTrials}/5) — click to toggle:
+                </div>
+                {forceFilesList.length === 0 && (
+                  <div style={{fontSize:11,color:C.muted,marginBottom:6}}>
+                    No force files uploaded.{" "}
+                    <span style={{color:C.accent,cursor:"pointer"}} onClick={()=>openUpload("force")}>Upload now →</span>
+                  </div>
+                )}
+                <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                  {forceFilesList.map((f,fi)=>{
+                    const sel = (activeEvent.fileIndices||[]).includes(fi);
+                    return (
+                      <div key={fi} onClick={()=>{
+                        const cur = activeEvent.fileIndices||[];
+                        if (sel) updateEvent({fileIndices:cur.filter(x=>x!==fi)});
+                        else if (cur.length < 5) updateEvent({fileIndices:[...cur,fi]});
+                      }} style={{
+                        padding:"4px 10px",borderRadius:12,fontSize:11,cursor:"pointer",
+                        background:sel?C.violet+"25":"transparent",
+                        border:`1px solid ${sel?C.violet+"80":C.border}`,
+                        color:sel?C.violet:C.muted
+                      }}>{f.name.replace(/\.csv$/i,"")}</div>
+                    );
+                  })}
+                  <div onClick={()=>openUpload("force")} style={{
+                    padding:"4px 10px",borderRadius:12,fontSize:11,cursor:"pointer",
+                    border:`1px dashed ${C.border}`,color:C.muted
+                  }}>+ Upload</div>
+                </div>
+              </div>
+
+              {/* Averaged chart */}
+              {displayData.length > 0 ? (
+                <>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span>Averaged — {validTrials} trial{validTrials!==1?"s":""}</span>
+                    {activeEvent.plateauDur > 0 ? (
+                      <span style={{color:C.emerald}}>
+                        Plateau @{activeEvent.plateauT?.toFixed(2)}s +{activeEvent.plateauDur.toFixed(2)}s ({activeEvent.plateauF?.toFixed(0)}N)
+                        {" "}<span style={{cursor:"pointer",color:C.rose}} onClick={()=>updateEvent({plateauT:null,plateauF:null,plateauDur:0})}>✕</span>
+                      </span>
+                    ) : (
+                      <span style={{color:C.muted,fontStyle:"italic"}}>Double-click to set plateau</span>
+                    )}
+                  </div>
+                  <div ref={fpChartRef} style={{height:160,cursor:"crosshair"}} onDoubleClick={handleChartDblClick}>
+                    <ResponsiveContainer>
+                      <ComposedChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                        <XAxis dataKey="time" type="number" domain={["auto","auto"]}
+                          tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                        <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
+                        <Tooltip content={Tt}/>
+                        {activeEvent.plateauT != null && <ReferenceLine x={activeEvent.plateauT} stroke={C.emerald} strokeDasharray="4 2" label={{value:"▶",fill:C.emerald,fontSize:10}}/>}
+                        <ReferenceLine x={ft - (activeEvent.tStart||0)} stroke={C.amber} strokeWidth={1.5} strokeDasharray="3 2"/>
+                        <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Avg"/>
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                  {/* Individual trial traces */}
+                  {validTrials > 1 && (() => {
+                    const traces = (activeEvent.fileIndices||[])
+                      .filter(fi => fi < forceFilesList.length)
+                      .map((fi,i) => {
                         const f = forceFilesList[fi];
                         if (!f?.data) return null;
                         const s = Math.max(1, Math.floor(f.data.length/200));
-                        return f.data.filter((_,i)=>i%s===0);
+                        return {data: f.data.filter((_,j)=>j%s===0), color: CYCLE_COLORS[i%CYCLE_COLORS.length]};
                       }).filter(Boolean);
-                      return (
-                        <div style={{height:80,marginTop:4}}>
-                          <ResponsiveContainer>
-                            <LineChart margin={{left:0,right:8,top:2,bottom:0}}>
-                              <XAxis type="number" dataKey="time" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="s"/>
-                              <YAxis tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="N" width={44}/>
-                              {fileTraces.map((d,i)=>(
-                                <Line key={i} data={d} type="monotone" dataKey="force"
-                                  stroke={CYCLE_COLORS[i%CYCLE_COLORS.length]} dot={false} strokeWidth={1} opacity={0.55} name={`T${i+1}`}/>
-                              ))}
-                            </LineChart>
-                          </ResponsiveContainer>
-                        </div>
-                      );
-                    })()}
-                  </>
-                )}
-                {(activeEvent.fileIndices||[]).length === 0 && (
-                  <div style={{fontSize:11,color:C.muted,textAlign:"center",padding:"12px 0"}}>Select 1–5 trial files above to see the averaged curve.</div>
-                )}
+                    return (
+                      <div style={{height:70,marginTop:4}}>
+                        <ResponsiveContainer>
+                          <LineChart margin={{left:0,right:8,top:2,bottom:0}}>
+                            <XAxis type="number" dataKey="time" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="s"/>
+                            <YAxis tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="N" width={44}/>
+                            {traces.map((tr,i)=>(
+                              <Line key={i} data={tr.data} type="monotone" dataKey="force"
+                                stroke={tr.color} dot={false} strokeWidth={1} opacity={0.5} name={`T${i+1}`}/>
+                            ))}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    );
+                  })()}
+                </>
+              ) : (
+                <div style={{fontSize:11,color:C.muted,textAlign:"center",padding:"12px 0"}}>
+                  Select 1–5 trial files above to see the averaged curve.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Plateau modal */}
+          {plateauModal && activeEvent && (
+            <div style={{position:"fixed",inset:0,background:"#00000080",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}}
+              onClick={()=>setPlateauModal(null)}>
+              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:24,width:320}}
+                onClick={e=>e.stopPropagation()}>
+                <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>Extend Plateau</div>
+                <div style={{fontSize:12,color:C.muted,marginBottom:14}}>
+                  At <b style={{color:C.accent}}>{plateauModal.t.toFixed(3)}s</b>, force = <b style={{color:C.violet}}>{plateauModal.f.toFixed(1)} N</b>
+                </div>
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:11,color:C.muted,marginBottom:5}}>Extend by (seconds)</div>
+                  <input type="number" step="0.1" min={0} autoFocus
+                    value={plateauModal.durStr}
+                    onChange={e=>setPlateauModal(m=>({...m,durStr:e.target.value}))}
+                    onKeyDown={e=>{if(e.key==='Enter'){const v=parseFloat(plateauModal.durStr);if(!isNaN(v)&&v>0){setForceEvents(prev=>prev.map(ev=>ev.id===activeEventId?{...ev,plateauT:plateauModal.t,plateauF:plateauModal.f,plateauDur:v}:ev));setPlateauModal(null);}}if(e.key==='Escape')setPlateauModal(null);}}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.accent}`,borderRadius:6,padding:"8px 12px",color:C.text,fontSize:14,boxSizing:"border-box",outline:"none"}}/>
+                </div>
+                <div style={{fontSize:11,color:C.muted,marginBottom:16}}>
+                  The force curve will be cut at {plateauModal.t.toFixed(3)}s and held at {plateauModal.f.toFixed(1)}N for the entered duration.
+                </div>
+                <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                  <Btn small onClick={()=>setPlateauModal(null)}>Cancel</Btn>
+                  <Btn small active onClick={()=>{
+                    const v=parseFloat(plateauModal.durStr);
+                    if(!isNaN(v)&&v>0){
+                      setForceEvents(prev=>prev.map(ev=>ev.id===activeEventId?{...ev,plateauT:plateauModal.t,plateauF:plateauModal.f,plateauDur:v}:ev));
+                      setPlateauModal(null);
+                    }
+                  }}>Apply</Btn>
+                </div>
               </div>
-            </>
+            </div>
           )}
         </div>
       );
@@ -1313,6 +1421,117 @@ function Dashboard({ session }) {
                   return <circle key={i} cx={pt[0]} cy={pt[1]} r={/head/i.test(lbl)?7:4}
                     fill={/head/i.test(lbl)?C.amber:C.accent} opacity={0.9}/>;
                 })}
+                {/* ── Force arrows on hands ── */}
+                {(() => {
+                  if (!hasData || !forceEvents.length) return null;
+                  const arrows = [];
+                  const segLabels = mvnx?.segLabels || [];
+
+                  // Find hand segment indices
+                  const rightHandIdx = segLabels.findIndex(l => /right.*hand|hand.*right/i.test(l));
+                  const leftHandIdx  = segLabels.findIndex(l => /left.*hand|hand.*left/i.test(l));
+
+                  forceEvents.forEach(ev => {
+                    if (!ev.fileIndices?.length) return;
+                    const avgData = computeAveraged(ev, forceFilesList);
+                    if (!avgData.length) return;
+
+                    // Time in force event's local timeline
+                    const localT = ft - (ev.tStart || 0);
+                    if (localT < 0 || localT > avgData[avgData.length - 1].time + 0.5) return;
+
+                    // Interpolate force magnitude at current time
+                    let forceMag = 0;
+                    if (localT <= avgData[0].time) {
+                      forceMag = avgData[0].force;
+                    } else if (localT >= avgData[avgData.length - 1].time) {
+                      forceMag = avgData[avgData.length - 1].force;
+                    } else {
+                      for (let k = 0; k < avgData.length - 1; k++) {
+                        if (localT >= avgData[k].time && localT <= avgData[k+1].time) {
+                          const frac = (localT - avgData[k].time) / (avgData[k+1].time - avgData[k].time);
+                          forceMag = avgData[k].force + frac * (avgData[k+1].force - avgData[k].force);
+                          break;
+                        }
+                      }
+                    }
+                    if (forceMag < 1) return; // skip near-zero
+
+                    const peakForce = Math.max(...avgData.map(d => d.force), 1);
+                    const MAX_LEN = 70;
+                    const arrowLen = Math.max(12, (forceMag / peakForce) * MAX_LEN);
+
+                    // Determine SVG direction vector
+                    let svgDir = null;
+                    const dirKey = ev.direction || 'auto';
+                    if (dirKey !== 'auto' && DIR_SVG[dirKey]) {
+                      const vec = DIR_SVG[dirKey][skelView] || [0, -1];
+                      const mag = Math.sqrt(vec[0]**2 + vec[1]**2) || 1;
+                      svgDir = [vec[0]/mag, vec[1]/mag];
+                    }
+
+                    // Which hands to draw on
+                    const hands = ev.hand === 'bilateral'
+                      ? [rightHandIdx, leftHandIdx]
+                      : ev.hand === 'left'
+                        ? [leftHandIdx]
+                        : [rightHandIdx];
+
+                    hands.forEach((hIdx, hi) => {
+                      if (hIdx < 0 || !pts[hIdx]) return;
+                      const [hx, hy] = pts[hIdx];
+
+                      // Auto direction: use forearm→hand bone vector
+                      let dx = 0, dy = -1;
+                      if (!svgDir) {
+                        // find forearm segment (wrist or lower arm)
+                        const isRight = ev.hand === 'right' || (ev.hand === 'bilateral' && hi === 0);
+                        const forearmIdx = segLabels.findIndex(l =>
+                          isRight ? /right.*(forearm|lowerarm|wrist)/i.test(l) : /left.*(forearm|lowerarm|wrist)/i.test(l)
+                        );
+                        if (forearmIdx >= 0 && pts[forearmIdx]) {
+                          const [fx, fy] = pts[forearmIdx];
+                          const rawDx = hx - fx, rawDy = hy - fy;
+                          const rawMag = Math.sqrt(rawDx**2 + rawDy**2) || 1;
+                          dx = rawDx / rawMag; dy = rawDy / rawMag;
+                        }
+                      } else {
+                        [dx, dy] = svgDir;
+                      }
+
+                      const tipX = hx + dx * arrowLen;
+                      const tipY = hy + dy * arrowLen;
+
+                      // Arrowhead (two short lines at ~30° from tip)
+                      const headLen = 8;
+                      const angle = Math.atan2(dy, dx);
+                      const a1x = tipX - headLen * Math.cos(angle - 0.5);
+                      const a1y = tipY - headLen * Math.sin(angle - 0.5);
+                      const a2x = tipX - headLen * Math.cos(angle + 0.5);
+                      const a2y = tipY - headLen * Math.sin(angle + 0.5);
+
+                      const color = ev.hand === 'left' || (ev.hand === 'bilateral' && hi === 1) ? C.rose : C.sky;
+                      const key = `arrow-${ev.id}-${hi}`;
+
+                      arrows.push(
+                        <g key={key}>
+                          <line x1={hx} y1={hy} x2={tipX} y2={tipY}
+                            stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
+                          <line x1={tipX} y1={tipY} x2={a1x} y2={a1y}
+                            stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
+                          <line x1={tipX} y1={tipY} x2={a2x} y2={a2y}
+                            stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
+                          <text x={tipX + dx*4} y={tipY + dy*4 + 4}
+                            fill={color} fontSize={9} textAnchor="middle" fontWeight="bold">
+                            {forceMag.toFixed(0)}N
+                          </text>
+                        </g>
+                      );
+                    });
+                  });
+
+                  return arrows;
+                })()}
                 {!hasData&&<text x={W/2} y={H-16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose — upload MVNX</text>}
               </svg>
 
