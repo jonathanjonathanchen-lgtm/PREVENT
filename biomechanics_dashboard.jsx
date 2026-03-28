@@ -1046,12 +1046,25 @@ function Dashboard({ session }) {
       .map(d => ({...d, time: +(d.time - activeLsf.blipTime).toFixed(3)}));
   }, [activeLsf]);
 
+  // Pre-compute averaged data for all force events (keyed by event id)
+  // so animation frames never call computeAveraged directly
+  const allEvAveraged = useMemo(() => {
+    const forceFilesList = activeJob?.forceFiles || [];
+    const result = {};
+    for (const evs of Object.values(forceEvents)) {
+      for (const ev of evs) {
+        result[ev.id] = computeAveraged(ev, forceFilesList);
+      }
+    }
+    return result;
+  }, [forceEvents, activeJob?.forceFiles]); // eslint-disable-line
+
   // Active force event averaged data (preferred over raw file for Dynamics)
   const activeEvForDyn = useMemo(() => {
     const allEvs = Object.values(forceEvents).flat();
     const ev = allEvs.find(e => e.id === activeEventId);
     if (!ev || !(ev.fileIndices?.length)) return null;
-    const avg = computeAveraged(ev, activeJob?.forceFiles || []);
+    const avg = allEvAveraged[ev.id] || [];
     if (!avg.length) return null;
     // Shift to align with XSENS timeline (tStart)
     return { data: avg.map(d => ({...d, time: +(d.time + (ev.tStart||0)).toFixed(3)})), tStart: ev.tStart||0, dirKey: ev.hand==='left'?'-y':'+y' };
@@ -1099,7 +1112,7 @@ function Dashboard({ session }) {
 
     // Active force event
     const activeEvent = curEvs.find(e => e.id === activeEventId) || null;
-    const averagedData = activeEvent ? computeAveraged(activeEvent, forceFilesList) : [];
+    const averagedData = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
 
     const TYPE_OPTS = ['push','lift','pinch','pull','carry'];
     const HAND_OPTS = [{v:'right',l:'Right'},{v:'left',l:'Left'},{v:'bilateral',l:'Both'}];
@@ -1144,7 +1157,7 @@ function Dashboard({ session }) {
       // Valid trial count (indices that actually exist in forceFilesList)
       const validTrials = (activeEvent?.fileIndices||[]).filter(i => i < forceFilesList.length).length;
 
-      const avgForEvent = activeEvent ? computeAveraged(activeEvent, forceFilesList) : [];
+      const avgForEvent = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
       const stride = Math.max(1, Math.floor(avgForEvent.length / 400));
       const displayData = avgForEvent.filter((_,i) => i % stride === 0);
 
@@ -1495,7 +1508,7 @@ function Dashboard({ session }) {
 
                   curEvs.forEach(ev => {
                     if (!ev.fileIndices?.length) return;
-                    const avgData = computeAveraged(ev, forceFilesList);
+                    const avgData = allEvAveraged[ev.id] || [];
                     if (!avgData.length) return;
 
                     // Time in force event's local timeline
