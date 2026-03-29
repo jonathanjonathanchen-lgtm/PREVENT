@@ -79,8 +79,10 @@ async function blobToText(blob) {
 // ── MVNX Parser ───────────────────────────────────────────────────────────────
 function parseMVNX(xmlStr) {
   try {
+    console.log("[parseMVNX] input length:", xmlStr.length, "first 200 chars:", JSON.stringify(xmlStr.slice(0, 200)));
     const doc = new DOMParser().parseFromString(xmlStr, "application/xml");
-    if (doc.querySelector("parsererror")) return { ok:false, error:"XML parse error" };
+    const pe = doc.querySelector("parsererror");
+    if (pe) return { ok:false, error:"XML parse error: " + pe.textContent.slice(0, 200) };
     const subject = doc.querySelector("subject");
     const frameRate = parseFloat(subject?.getAttribute("frameRate") || "60");
     const segLabels = [];
