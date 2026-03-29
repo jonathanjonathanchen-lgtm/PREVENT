@@ -79,7 +79,9 @@ async function blobToText(blob) {
 // ── MVNX Parser ───────────────────────────────────────────────────────────────
 function parseMVNX(xmlStr) {
   try {
-    console.log("[parseMVNX] input length:", xmlStr.length, "first 200 chars:", JSON.stringify(xmlStr.slice(0, 200)));
+    // Trim trailing content after the root closing tag (some MVNX exports append extra data)
+    const closeIdx = xmlStr.lastIndexOf("</mvnx>");
+    if (closeIdx !== -1) xmlStr = xmlStr.slice(0, closeIdx + "</mvnx>".length);
     const doc = new DOMParser().parseFromString(xmlStr, "application/xml");
     const pe = doc.querySelector("parsererror");
     if (pe) return { ok:false, error:"XML parse error: " + pe.textContent.slice(0, 200) };
