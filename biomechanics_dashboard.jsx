@@ -147,12 +147,8 @@ function parseLoadSOL(text) {
       if (!isNaN(time)) data.push({ time, left, right, total: left+right, trig });
     }
     let blipTime = null;
-    const trigNonZero = data.filter(d => d.trig > 0);
-    console.log("[parseLoadSOL] data rows:", data.length, "nonzero trig:", trigNonZero.length,
-      "first 5 trig:", trigNonZero.slice(0, 5).map(d => ({t: d.time, trig: d.trig})));
     const firstBlip = data.find(d => d.trig > 5);
     if (firstBlip) blipTime = firstBlip.time;
-    console.log("[parseLoadSOL] blipTime:", blipTime);
     const leftMax  = data.length ? Math.max(...data.map(d => d.left))  : 0;
     const rightMax = data.length ? Math.max(...data.map(d => d.right)) : 0;
     return { ok:true, data, blipTime, stats:{ leftMax, rightMax } };
@@ -230,7 +226,7 @@ const WINTER = {
 
   // Upper extremity  — exact Winter Table 4.1 values
   RightUpperArm: [0.028, 0.436, 0.322], LeftUpperArm: [0.028, 0.436, 0.322],
-  RightForearm:  [0.016, 0.430, 0.303], LeftForearm:  [0.016, 0.430, 0.303],
+  RightForeArm:  [0.016, 0.430, 0.303], LeftForeArm:  [0.016, 0.430, 0.303],
   RightHand:     [0.006, 0.506, 0.297], LeftHand:     [0.006, 0.506, 0.297],
 
   // Lower extremity  — exact Winter Table 4.1 values
@@ -242,8 +238,8 @@ const WINTER = {
 // Each segment's geometrical distal reference (for CoM & length)
 const SEG_DISTAL = {
   Pelvis:'L5', L5:'L3', L3:'T12', T12:'T8', T8:'Neck', Neck:'Head',
-  RightShoulder:'RightUpperArm', RightUpperArm:'RightForearm', RightForearm:'RightHand',
-  LeftShoulder:'LeftUpperArm',   LeftUpperArm:'LeftForearm',   LeftForearm:'LeftHand',
+  RightShoulder:'RightUpperArm', RightUpperArm:'RightForeArm', RightForeArm:'RightHand',
+  LeftShoulder:'LeftUpperArm',   LeftUpperArm:'LeftForeArm',   LeftForeArm:'LeftHand',
   RightUpperLeg:'RightLowerLeg', RightLowerLeg:'RightFoot', RightFoot:'RightToe',
   LeftUpperLeg:'LeftLowerLeg',   LeftLowerLeg:'LeftFoot',   LeftFoot:'LeftToe',
 };
@@ -341,20 +337,25 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
       vadd(vcross(vsub(r_hL, r_com_p), F_hL), vadd(M_hR, M_hL)));
     const M_L5S1 = vneg(tau_p);
 
-    // ── Arms top-down (WiDACS), quasi-static ──
+    // ── Arms top-down, quasi-static ──
+    // Always solve both arms (gravity moments exist even without external force).
+    // External force is only applied to the designated hand(s).
     const bilateral = handSide === 'bilateral';
-    const doRight   = !handSide || handSide === 'right' || bilateral;
-    const doLeft    = handSide === 'left' || bilateral;
-    const dirs      = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
-    const armSolve  = (cap) => {
-      const hand = `${cap}Hand`, fore = `${cap}Forearm`, upper = `${cap}UpperArm`;
-      if (!forceData?.length || si[hand] == null) return null;
+    const forceRight = !handSide || handSide === 'right' || bilateral;
+    const forceLeft  = handSide === 'left' || bilateral;
+    const dirs       = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
+    const armSolve   = (cap, applyForce) => {
+      const hand = `${cap}Hand`, fore = `${cap}ForeArm`, upper = `${cap}UpperArm`;
+      if (si[hand] == null) return null;
       const r_wrist = vget(frame.pos, si[hand]);
       const r_elbow = vget(frame.pos, si[fore] ?? si[upper]);
       const handDir = vnorm(vsub(r_wrist, r_elbow));
       const r_app   = vadd(r_wrist, vscale(handDir, 0.10));
-      const fDir    = dirs[forceDirKey] || handDir;
-      const F_app   = vscale(fDir, bilateral ? wF * 0.5 : wF);
+      let F_app = [0,0,0];
+      if (applyForce && forceData?.length) {
+        const fDir = dirs[forceDirKey] || handDir;
+        F_app = vscale(fDir, bilateral ? wF * 0.5 : wF);
+      }
       const h = solve(hand,  F_app,       [0,0,0],    r_app,       frame);
       const f = solve(fore,  vneg(h.F),   vneg(h.M),  h.r_prox,    frame);
       const u = solve(upper, vneg(f.F),   vneg(f.M),  f.r_prox,    frame);
@@ -370,8 +371,8 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
     results.push({
       t:        +t.toFixed(3),
       L5S1:     fmt(M_L5S1),
-      ...(doRight ? { shoulderR: fmt(armSolve('Right') || [0,0,0]) } : {}),
-      ...(doLeft  ? { shoulderL: fmt(armSolve('Left')  || [0,0,0]) } : {}),
+      shoulderR: fmt(armSolve('Right', forceRight) || [0,0,0]),
+      shoulderL: fmt(armSolve('Left',  forceLeft)  || [0,0,0]),
     });
   });
   return results;
@@ -1160,149 +1161,160 @@ function Dashboard({ session }) {
     } catch(e) { console.error('invDynData crash:', e); return []; }
   }, [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey, activeEvForDyn]); // eslint-disable-line
 
-  // ── Forces right column (memoized so skeleton playback doesn't re-render charts) ──
-  const forcesRightCol = useMemo(() => {
+  // ── Forces right column chart data (memoized — expensive computation) ──
+  const forcesChartData = useMemo(() => {
     try {
-      const mvnxFiles = activeJob?.mvnxFiles || [];
-      const hasMvnx   = !!activeSkelMvnx?.frames?.length;
-      const hasData   = invDynData?.length > 0;
-      const hasLS     = !!clippedLsf?.length;
-      const evStart   = activeEvent?.tStart ?? null;
-      const evDur     = averagedEvData.length ? averagedEvData[averagedEvData.length-1].time : 0;
-      const evEnd     = evStart != null ? evStart + evDur : null;
-
-      const jChart = (title, dataKey, color=C.accent) => {
+      const chartFor = (dataKey) => {
         const d = invDynData?.map(r => {
           const v = r[dataKey];
           if (!v) return null;
           return { t: r.t, mag: v.mag, FE: v.FE, LB: v.LB, AR: v.AR };
         }).filter(Boolean) || [];
-        if (!d.length) return null;
-        const peakMag = Math.max(...d.map(r => r.mag||0));
-        return (
-          <ChartCard key={dataKey} title={<span>{title}<span style={{fontSize:10,color:C.muted,marginLeft:6}}>peak {peakMag.toFixed(0)} Nm</span></span>} h={190}>
-            <ResponsiveContainer>
-              <LineChart data={d}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                <XAxis dataKey="t" type="number" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
-                <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="Nm"/>
-                <Tooltip content={Tt}/>
-                <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
-                {evStart!=null && evEnd!=null && (
-                  <ReferenceArea x1={evStart} x2={evEnd} fill={C.accent} fillOpacity={0.08}/>
-                )}
-                {showMomComponents ? (
-                  <>
-                    <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE (flex/ext)"/>
-                    <Line type="monotone" dataKey="LB" stroke={C.amber} dot={false} strokeWidth={1.5} name="LB (lat bend)"/>
-                    <Line type="monotone" dataKey="AR" stroke={C.rose}  dot={false} strokeWidth={1.5} name="AR (axial rot)"/>
-                    <Legend wrapperStyle={{fontSize:9}}/>
-                  </>
-                ) : (
-                  <Line type="monotone" dataKey="mag" stroke={color} dot={false} strokeWidth={2} name="Resultant"/>
-                )}
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
-        );
+        const peakMag = d.length ? Math.max(...d.map(r => r.mag||0)) : 0;
+        return { data: d, peakMag };
       };
+      return { L5S1: chartFor("L5S1"), shoulderR: chartFor("shoulderR"), shoulderL: chartFor("shoulderL") };
+    } catch(e) { console.error('forcesChartData crash:', e); return { L5S1:{data:[],peakMag:0}, shoulderR:{data:[],peakMag:0}, shoulderL:{data:[],peakMag:0} }; }
+  }, [invDynData]);
 
+  // ── Forces right column (renders charts with playback cursor) ──
+  const renderForcesRightCol = () => {
+    const mvnxFiles = activeJob?.mvnxFiles || [];
+    const hasMvnx   = !!activeSkelMvnx?.frames?.length;
+    const hasData   = invDynData?.length > 0;
+    const hasLS     = !!clippedLsf?.length;
+    const evStart   = activeEvent?.tStart ?? null;
+    const evDur     = averagedEvData.length ? averagedEvData[averagedEvData.length-1].time : 0;
+    const evEnd     = evStart != null ? evStart + evDur : null;
+    const curTime   = activeSkelMvnx?.frames?.[Math.min(skelFrame, (activeSkelMvnx?.frames?.length||1)-1)]?.time ?? null;
+
+    const jChart = (title, dataKey, color=C.accent) => {
+      const { data: d, peakMag } = forcesChartData[dataKey] || { data: [], peakMag: 0 };
+      if (!d.length) return null;
       return (
-        <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          {/* Config bar */}
-          <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",
-            background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px"}}>
+        <ChartCard key={dataKey} title={<span>{title}<span style={{fontSize:10,color:C.muted,marginLeft:6}}>peak {peakMag.toFixed(0)} Nm</span></span>} h={190}>
+          <ResponsiveContainer>
+            <LineChart data={d}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+              <XAxis dataKey="t" type="number" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+              <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="Nm"/>
+              <Tooltip content={Tt}/>
+              <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
+              {curTime!=null && <ReferenceLine x={curTime} stroke={C.accent} strokeWidth={1.5} strokeDasharray="4 2"/>}
+              {evStart!=null && evEnd!=null && (
+                <ReferenceArea x1={evStart} x2={evEnd} fill={C.accent} fillOpacity={0.08}/>
+              )}
+              {showMomComponents ? (
+                <>
+                  <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE (flex/ext)" isAnimationActive={false}/>
+                  <Line type="monotone" dataKey="LB" stroke={C.amber} dot={false} strokeWidth={1.5} name="LB (lat bend)" isAnimationActive={false}/>
+                  <Line type="monotone" dataKey="AR" stroke={C.rose}  dot={false} strokeWidth={1.5} name="AR (axial rot)" isAnimationActive={false}/>
+                  <Legend wrapperStyle={{fontSize:9}}/>
+                </>
+              ) : (
+                <Line type="monotone" dataKey="mag" stroke={color} dot={false} strokeWidth={2} name="Resultant" isAnimationActive={false}/>
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      );
+    };
+
+    return (
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {/* Config bar */}
+        <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",
+          background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px"}}>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <span style={{fontSize:12,color:C.muted}}>Body mass:</span>
+            <input type="number" step="any" min={20} max={250} value={bodyMass}
+              onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>0)setBodyMass(v);}}
+              style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.accent,fontSize:12}}/>
+            <span style={{fontSize:12,color:C.muted}}>kg</span>
+          </div>
+          {mvnxFiles.length > 1 && (
             <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.muted}}>Body mass:</span>
-              <input type="number" step="any" min={20} max={250} value={bodyMass}
-                onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>0)setBodyMass(v);}}
-                style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.accent,fontSize:12}}/>
-              <span style={{fontSize:12,color:C.muted}}>kg</span>
+              <span style={{fontSize:12,color:C.muted}}>MVNX:</span>
+              <select value={skelFileIdx} onChange={e=>setSkelFileIdx(+e.target.value)}
+                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
+                {mvnxFiles.map((f,i)=><option key={i} value={i}>{f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}</option>)}
+              </select>
             </div>
-            {mvnxFiles.length > 1 && (
-              <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                <span style={{fontSize:12,color:C.muted}}>MVNX:</span>
-                <select value={skelFileIdx} onChange={e=>setSkelFileIdx(+e.target.value)}
-                  style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
-                  {mvnxFiles.map((f,i)=><option key={i} value={i}>{f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}</option>)}
-                </select>
+          )}
+          <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
+            {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"}
+            {activeLsf?.blipTime!=null && <span style={{color:C.amber,marginLeft:6}}>⚡ blip {activeLsf.blipTime.toFixed(2)}s</span>}
+          </div>
+        </div>
+
+        {/* Charts / empty states */}
+        {!hasMvnx ? (
+          <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data to compute shoulder moments."/>
+        ) : !hasData ? (
+          <EmptyState icon="📐" title="No dynamics data" detail="Assign force events to hands to compute shoulder moments."/>
+        ) : (
+          <>
+            <div style={{display:"flex",alignItems:"center",gap:12,
+              borderBottom:`1px solid ${C.accent}40`,paddingBottom:6}}>
+              <span style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>
+                Joint Moments — Quasi-Static
+              </span>
+              <button onClick={()=>setShowMomComponents(v=>!v)} style={{
+                marginLeft:"auto",background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+                padding:"3px 10px",color:showMomComponents?C.accent:C.muted,fontSize:11,cursor:"pointer"}}>
+                {showMomComponents ? "Show resultant" : "Show FE / LB / AR"}
+              </button>
+            </div>
+            {!hasLS && (
+              <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
+                padding:"8px 12px",fontSize:11,color:C.amber}}>
+                No LoadSOL paired — L5/S1 bottom-up will be zero. Pair in Skeleton tab.
               </div>
             )}
-            <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
-              {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"}
-              {activeLsf?.blipTime!=null && <span style={{color:C.amber,marginLeft:6}}>⚡ blip {activeLsf.blipTime.toFixed(2)}s</span>}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+              {jChart("L5/S1 — Bottom-Up (via LoadSOL)", "L5S1", C.sky)}
             </div>
-          </div>
-
-          {/* Charts / empty states */}
-          {!hasMvnx ? (
-            <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data to compute shoulder moments."/>
-          ) : !hasData ? (
-            <EmptyState icon="📐" title="No dynamics data" detail="Assign force events to hands to compute shoulder moments."/>
-          ) : (
-            <>
-              <div style={{display:"flex",alignItems:"center",gap:12,
-                borderBottom:`1px solid ${C.accent}40`,paddingBottom:6}}>
-                <span style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>
-                  Shoulder Moments — Quasi-Static
-                </span>
-                <button onClick={()=>setShowMomComponents(v=>!v)} style={{
-                  marginLeft:"auto",background:"none",border:`1px solid ${C.border}`,borderRadius:6,
-                  padding:"3px 10px",color:showMomComponents?C.accent:C.muted,fontSize:11,cursor:"pointer"}}>
-                  {showMomComponents ? "Show resultant" : "Show FE / LB / AR"}
-                </button>
-              </div>
-              {!hasLS && (
-                <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
-                  padding:"8px 12px",fontSize:11,color:C.amber}}>
-                  No LoadSOL paired — L5/S1 bottom-up will be zero. Pair in Skeleton tab.
-                </div>
-              )}
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
-                {jChart("L5/S1 — Bottom-Up (via LoadSOL)", "L5S1", C.sky)}
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
-                {jChart("Right Shoulder", "shoulderR", C.amber)}
-                {jChart("Left Shoulder",  "shoulderL", C.emerald)}
-              </div>
-              {/* Peak table */}
-              <div style={{overflowX:"auto",background:C.card,border:`1px solid ${C.border}`,borderRadius:8}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                  <thead>
-                    <tr style={{borderBottom:`1px solid ${C.border}`}}>
-                      {["Joint","Peak (Nm)",...(showMomComponents?["Peak FE","Peak LB","Peak AR"]:[])].map(h=>(
-                        <th key={h} style={{textAlign:"left",padding:"7px 12px",color:C.muted,fontWeight:600}}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[
-                      {label:"L5/S1 (bottom-up)", key:"L5S1",     clr:C.sky},
-                      {label:"R Shoulder",         key:"shoulderR", clr:C.amber},
-                      {label:"L Shoulder",         key:"shoulderL", clr:C.emerald},
-                    ].map(({label,key,clr}) => {
-                      const d = invDynData.map(r => r[key]).filter(Boolean);
-                      if (!d.length) return null;
-                      const pk = c => Math.max(...d.map(r => Math.abs(r[c]||0))).toFixed(1);
-                      return (
-                        <tr key={key} style={{borderBottom:`1px solid ${C.border}20`}}>
-                          <td style={{padding:"6px 12px",color:clr,fontWeight:500}}>{label}</td>
-                          <td style={{padding:"6px 12px",color:C.accent,fontWeight:600}}>{pk("mag")}</td>
-                          {showMomComponents&&<td style={{padding:"6px 12px",color:C.teal}}>{pk("FE")}</td>}
-                          {showMomComponents&&<td style={{padding:"6px 12px",color:C.amber}}>{pk("LB")}</td>}
-                          {showMomComponents&&<td style={{padding:"6px 12px",color:C.rose}}>{pk("AR")}</td>}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-        </div>
-      );
-    } catch(e) { console.error('forcesRightCol crash:', e); return <div style={{color:C.red,padding:20}}>Chart render error (see console)</div>; }
-  }, [invDynData, showMomComponents, activeEvent, averagedEvData, activeLsf, clippedLsf, bodyMass, skelFileIdx, activeSkelMvnx, activeJob?.mvnxFiles]); // eslint-disable-line
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+              {jChart("Right Shoulder", "shoulderR", C.amber)}
+              {jChart("Left Shoulder",  "shoulderL", C.emerald)}
+            </div>
+            {/* Peak table */}
+            <div style={{overflowX:"auto",background:C.card,border:`1px solid ${C.border}`,borderRadius:8}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                <thead>
+                  <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                    {["Joint","Peak (Nm)",...(showMomComponents?["Peak FE","Peak LB","Peak AR"]:[])].map(h=>(
+                      <th key={h} style={{textAlign:"left",padding:"7px 12px",color:C.muted,fontWeight:600}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    {label:"L5/S1 (bottom-up)", key:"L5S1",     clr:C.sky},
+                    {label:"R Shoulder",         key:"shoulderR", clr:C.amber},
+                    {label:"L Shoulder",         key:"shoulderL", clr:C.emerald},
+                  ].map(({label,key,clr}) => {
+                    const d = invDynData.map(r => r[key]).filter(Boolean);
+                    if (!d.length) return null;
+                    const pk = c => Math.max(...d.map(r => Math.abs(r[c]||0))).toFixed(1);
+                    return (
+                      <tr key={key} style={{borderBottom:`1px solid ${C.border}20`}}>
+                        <td style={{padding:"6px 12px",color:clr,fontWeight:500}}>{label}</td>
+                        <td style={{padding:"6px 12px",color:C.accent,fontWeight:600}}>{pk("mag")}</td>
+                        {showMomComponents&&<td style={{padding:"6px 12px",color:C.teal}}>{pk("FE")}</td>}
+                        {showMomComponents&&<td style={{padding:"6px 12px",color:C.amber}}>{pk("LB")}</td>}
+                        {showMomComponents&&<td style={{padding:"6px 12px",color:C.rose}}>{pk("AR")}</td>}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
 
   // ── Shared constants ─────────────────────────────────────────────────────────
   const TYPE_OPTS = ['push','lift','pinch','pull','carry'];
@@ -1975,9 +1987,9 @@ function Dashboard({ session }) {
             </ErrorBoundary>
           </div>
 
-          {/* ── Right column: memoized — does NOT re-render on skelFrame changes ── */}
+          {/* ── Right column: charts with playback cursor ── */}
           <ErrorBoundary>
-            {forcesRightCol}
+            {renderForcesRightCol()}
           </ErrorBoundary>
         </div>
       </div>
