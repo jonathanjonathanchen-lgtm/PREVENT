@@ -146,8 +146,12 @@ function parseLoadSOL(text) {
       if (!isNaN(time)) data.push({ time, left, right, total: left+right, trig });
     }
     let blipTime = null;
+    const trigNonZero = data.filter(d => d.trig > 0);
+    console.log("[parseLoadSOL] data rows:", data.length, "nonzero trig:", trigNonZero.length,
+      "first 5 trig:", trigNonZero.slice(0, 5).map(d => ({t: d.time, trig: d.trig})));
     const firstBlip = data.find(d => d.trig > 5);
     if (firstBlip) blipTime = firstBlip.time;
+    console.log("[parseLoadSOL] blipTime:", blipTime);
     const leftMax  = data.length ? Math.max(...data.map(d => d.left))  : 0;
     const rightMax = data.length ? Math.max(...data.map(d => d.right)) : 0;
     return { ok:true, data, blipTime, stats:{ leftMax, rightMax } };
