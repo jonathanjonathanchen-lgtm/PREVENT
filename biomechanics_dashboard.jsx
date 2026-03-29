@@ -62,6 +62,20 @@ const PLANE_LABELS = ["LB","AR","FE"];
 const PLANE_COLORS = [C.amber, C.rose, C.teal];
 const PLANE_NAMES  = ["Lat Bend / Abd (°)","Axial Rot / IE (°)","Flex/Ext (°)"];
 
+// ── Read blob/file as text, auto-decompressing gzip ──────────────────────────
+async function blobToText(blob) {
+  const buf = await blob.arrayBuffer();
+  const b = new Uint8Array(buf);
+  if (b[0] === 0x1f && b[1] === 0x8b) {
+    const ds = new DecompressionStream("gzip");
+    const decompressed = await new Response(
+      new Blob([buf]).stream().pipeThrough(ds)
+    ).text();
+    return decompressed;
+  }
+  return new TextDecoder().decode(buf);
+}
+
 // ── MVNX Parser ───────────────────────────────────────────────────────────────
 function parseMVNX(xmlStr) {
   try {
@@ -767,7 +781,7 @@ function Dashboard({ session }) {
         const { data, error } = await supabase.storage.from(BUCKET).download(path);
         if (error || !data) return null;
         setLoadingMsg(`Parsing ${name}…`);
-        return await data.text();
+        return await blobToText(data);
       };
 
       const mvnxRecs  = records.filter(r => r.file_type === "mvnx").sort((a,b) => a.sort_order - b.sort_order);
@@ -938,7 +952,7 @@ function Dashboard({ session }) {
     setShowUploadModal(false);
 
     for (const file of files) {
-      const text = await file.text();
+      const text = await blobToText(file);
       const storagePath = `${activeJobId}/${uploadType}/${Date.now()}_${file.name}`;
 
       // Parse first — bail if invalid
