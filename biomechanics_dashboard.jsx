@@ -1478,6 +1478,8 @@ function Dashboard({ session }) {
           {curEvs.map(ev=>{
             const nTrials=(ev.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
             const isActive=ev.id===activeEventId;
+            const avgData=allEvAveraged[ev.id]||[];
+            const peakF=avgData.length?Math.max(...avgData.map(d=>d.force)):0;
             return (
               <div key={ev.id} onClick={()=>setActiveEventId(ev.id)} style={{
                 display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,cursor:"pointer",
@@ -1485,8 +1487,16 @@ function Dashboard({ session }) {
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:12,fontWeight:isActive?600:400,color:isActive?C.accent:C.text,
                     overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ev.label}</div>
-                  <div style={{fontSize:10,color:C.muted}}>{ev.type} · {ev.hand} · {nTrials} trial{nTrials!==1?'s':''}</div>
+                  <div style={{fontSize:10,color:C.muted}}>
+                    {ev.type} · {ev.hand} · {nTrials} trial{nTrials!==1?'s':''}
+                    {peakF>0&&<span style={{color:C.violet,marginLeft:4}}>· {peakF.toFixed(0)} N peak</span>}
+                  </div>
                 </div>
+                <Btn small onClick={e=>{e.stopPropagation();
+                  const id=`ev_${Date.now()}`;
+                  setCurEvs(prev=>[...prev,{...ev,id,label:ev.label+' (copy)'}]);
+                  setActiveEventId(id);
+                }} style={{fontSize:10}}>⧉</Btn>
                 <Btn small danger onClick={e=>{e.stopPropagation();
                   setCurEvs(prev=>prev.filter(x=>x.id!==ev.id));
                   if(activeEventId===ev.id) setActiveEventId(null);
