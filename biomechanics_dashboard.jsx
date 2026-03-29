@@ -643,7 +643,7 @@ export default function App() {
     </div>
   );
   if (!session) return <LoginScreen/>;
-  return <Dashboard session={session}/>;
+  return <ErrorBoundary><Dashboard session={session}/></ErrorBoundary>;
 }
 
 // ── Forces & Dynamics right column — memoized so skeleton playback doesn't trigger re-renders ──
@@ -1227,35 +1227,40 @@ function Dashboard({ session }) {
   // Pre-compute averaged data for all force events (keyed by event id)
   // so animation frames never call computeAveraged directly
   const allEvAveraged = useMemo(() => {
-    const forceFilesList = activeJob?.forceFiles || [];
-    const result = {};
-    for (const evs of Object.values(forceEvents)) {
-      for (const ev of evs) {
-        result[ev.id] = computeAveraged(ev, forceFilesList);
+    try {
+      const forceFilesList = activeJob?.forceFiles || [];
+      const result = {};
+      for (const evs of Object.values(forceEvents)) {
+        for (const ev of evs) {
+          result[ev.id] = computeAveraged(ev, forceFilesList);
+        }
       }
-    }
-    return result;
+      return result;
+    } catch(e) { console.error('allEvAveraged crash:', e); return {}; }
   }, [forceEvents, activeJob?.forceFiles]); // eslint-disable-line
 
   // Active force event averaged data (preferred over raw file for Dynamics)
   const activeEvForDyn = useMemo(() => {
-    const allEvs = Object.values(forceEvents).flat();
-    const ev = allEvs.find(e => e.id === activeEventId);
-    if (!ev || !(ev.fileIndices?.length)) return null;
-    const avg = allEvAveraged[ev.id] || [];
-    if (!avg.length) return null;
-    // Shift to align with XSENS timeline (tStart)
-    return { data: avg.map(d => ({...d, time: +(d.time + (ev.tStart||0)).toFixed(3)})), tStart: ev.tStart||0, dirKey: ev.hand==='left'?'-y':'+y', hand: ev.hand||'right' };
+    try {
+      const allEvs = Object.values(forceEvents).flat();
+      const ev = allEvs.find(e => e.id === activeEventId);
+      if (!ev || !(ev.fileIndices?.length)) return null;
+      const avg = allEvAveraged[ev.id] || [];
+      if (!avg.length) return null;
+      // Shift to align with XSENS timeline (tStart)
+      return { data: avg.map(d => ({...d, time: +(d.time + (ev.tStart||0)).toFixed(3)})), tStart: ev.tStart||0, dirKey: ev.hand==='left'?'-y':'+y', hand: ev.hand||'right' };
+    } catch(e) { console.error('activeEvForDyn crash:', e); return null; }
   }, [forceEvents, activeEventId, activeJob?.forceFiles]); // eslint-disable-line
 
   // Inverse dynamics — recomputes only when inputs change, NOT per frame
   const invDynData = useMemo(() => {
-    const fd       = activeEvForDyn?.data || activeForce?.data;
-    const fDir     = activeEvForDyn?.dirKey || forceDirKey;
-    // Auto-sync: use LoadSOL blip time as the WiDACS→XSENS offset when available
-    const fOff     = activeEvForDyn ? 0 : (activeLsf?.blipTime ?? forceOffset);
-    const handSide = activeEvForDyn?.hand || 'right';
-    return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, fd, fOff, fDir, handSide);
+    try {
+      const fd       = activeEvForDyn?.data || activeForce?.data;
+      const fDir     = activeEvForDyn?.dirKey || forceDirKey;
+      const fOff     = activeEvForDyn ? 0 : (activeLsf?.blipTime ?? forceOffset);
+      const handSide = activeEvForDyn?.hand || 'right';
+      return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, fd, fOff, fDir, handSide);
+    } catch(e) { console.error('invDynData crash:', e); return []; }
   }, [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey, activeEvForDyn]); // eslint-disable-line
 
   // ── Shared constants ─────────────────────────────────────────────────────────
