@@ -79,12 +79,24 @@ async function blobToText(blob) {
 // ── MVNX Parser ───────────────────────────────────────────────────────────────
 function parseMVNX(xmlStr) {
   try {
-    // Trim trailing content after the root closing tag (some MVNX exports append extra data)
-    const closeIdx = xmlStr.lastIndexOf("</mvnx>");
+    console.log("[parseMVNX] length:", xmlStr.length,
+      "first300:", JSON.stringify(xmlStr.slice(0, 300)),
+      "last200:", JSON.stringify(xmlStr.slice(-200)));
+    // Trim trailing content after the FIRST root closing tag
+    const closeIdx = xmlStr.indexOf("</mvnx>");
     if (closeIdx !== -1) xmlStr = xmlStr.slice(0, closeIdx + "</mvnx>".length);
+    else {
+      // Try generic: find closing tag of whatever root element
+      const rootMatch = xmlStr.match(/<(\w+)[\s>]/);
+      if (rootMatch) {
+        const tag = rootMatch[1];
+        const ci = xmlStr.indexOf(`</${tag}>`);
+        if (ci !== -1) xmlStr = xmlStr.slice(0, ci + `</${tag}>`.length);
+      }
+    }
     const doc = new DOMParser().parseFromString(xmlStr, "application/xml");
     const pe = doc.querySelector("parsererror");
-    if (pe) return { ok:false, error:"XML parse error: " + pe.textContent.slice(0, 200) };
+    if (pe) return { ok:false, error:"XML parse error: " + pe.textContent.slice(0, 300) };
     const subject = doc.querySelector("subject");
     const frameRate = parseFloat(subject?.getAttribute("frameRate") || "60");
     const segLabels = [];
