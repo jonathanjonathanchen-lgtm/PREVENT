@@ -146,9 +146,8 @@ function parseLoadSOL(text) {
       if (!isNaN(time)) data.push({ time, left, right, total: left+right, trig });
     }
     let blipTime = null;
-    const trigValues = data.map(d => d.trig);
-    const trigMax = Math.max(...trigValues);
-    if (trigMax > 5) blipTime = data[trigValues.indexOf(trigMax)].time;
+    const firstBlip = data.find(d => d.trig > 5);
+    if (firstBlip) blipTime = firstBlip.time;
     const leftMax  = data.length ? Math.max(...data.map(d => d.left))  : 0;
     const rightMax = data.length ? Math.max(...data.map(d => d.right)) : 0;
     return { ok:true, data, blipTime, stats:{ leftMax, rightMax } };
