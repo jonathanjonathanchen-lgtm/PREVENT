@@ -244,18 +244,22 @@ const SEG_DISTAL = {
   LeftUpperLeg:'LeftLowerLeg',   LeftLowerLeg:'LeftFoot',   LeftFoot:'LeftToe',
 };
 
-// ── Inverse Dynamics Engine (Newton-Euler, bottom-up) ────────────────────────
-// Quasi-static Newton-Euler inverse dynamics.
-// Inertial terms (ma, Iα) are zero — valid for slow/sustained occupational tasks.
+// ── Inverse Dynamics Engine (Newton-Euler, quasi-dynamic) ────────────────────
+// Includes inertial terms: ΣF = m·a_com, ΣM = I·α + ω×(I·ω)
+// CoM acceleration computed via central difference of MVNX position data.
+// Angular velocity/acceleration taken directly from MVNX.
+// Segment inertia from Winter (2009) radius of gyration.
 // Bottom-up from LoadSOL GRF for L5/S1; top-down from WiDACS for shoulders.
 function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDirKey, handSide) {
   if (!mvnx?.frames?.length || !(bodyMass > 0)) return [];
   const G  = [0, 0, -9.81];
   const si = mvnx.segIndex || {};
+  const nf = mvnx.frames.length;
+  const fps = mvnx.frameRate || 60;
 
   // Mean segment lengths from first 10 frames
   const segLen = {};
-  const refFrames = mvnx.frames.slice(0, Math.min(10, mvnx.frames.length)).filter(f => f.pos?.length);
+  const refFrames = mvnx.frames.slice(0, Math.min(10, nf)).filter(f => f.pos?.length);
   Object.entries(SEG_DISTAL).forEach(([seg, dSeg]) => {
     const pi = si[seg], di = si[dSeg];
     if (pi == null || di == null) return;
@@ -263,22 +267,62 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
     segLen[seg] = lens.reduce((a,b)=>a+b,0) / (lens.length||1) || 0.1;
   });
 
-  // Quasi-static solve: ΣF=0, ΣM=0 (no inertial terms)
-  const solve = (label, F_dist, M_dist, r_dist_force, frame) => {
+  // Central-difference step for numerical CoM acceleration (≈100ms window)
+  const diffH = Math.max(1, Math.round(fps / 10));
+
+  // CoM position for a given segment in a given frame
+  const comPos = (label, frame) => {
+    const idx = si[label];
+    if (idx == null) return [0,0,0];
+    const [, cf] = WINTER[label] || [0, 0.5];
+    const r_prox = vget(frame.pos, idx);
+    const dLabel = SEG_DISTAL[label];
+    const r_dist = dLabel && si[dLabel] != null ? vget(frame.pos, si[dLabel]) : vadd(r_prox,[0,0,0.1]);
+    return vadd(r_prox, vscale(vsub(r_dist, r_prox), cf));
+  };
+
+  // CoM acceleration via central finite difference of position
+  const comAccel = (label, fi) => {
+    const i0 = Math.max(0, fi - diffH), i2 = Math.min(nf - 1, fi + diffH);
+    const f0 = mvnx.frames[i0], f1 = mvnx.frames[fi], f2 = mvnx.frames[i2];
+    if (!f0?.pos?.length || !f2?.pos?.length) return [0,0,0];
+    const dt = (i2 - i0) / (2 * fps);  // half-span in seconds
+    const r0 = comPos(label, f0), r1 = comPos(label, f1), r2 = comPos(label, f2);
+    // a = (r2 - 2·r1 + r0) / dt², where dt = diffH/fps
+    const dtH = diffH / fps;
+    return vscale(vadd(vsub(r2, vscale(r1, 2)), r0), 1 / (dtH * dtH));
+  };
+
+  // Quasi-dynamic solve: ΣF = m·a, ΣM = I·α + ω×(I·ω)
+  const solve = (label, F_dist, M_dist, r_dist_force, frame, fi) => {
     const idx = si[label];
     if (idx == null) return { F:[0,0,0], M:[0,0,0], r_prox:[0,0,0] };
-    const [mf, cf] = WINTER[label] || [0.001, 0.5];
+    const [mf, cf, kf] = WINTER[label] || [0.001, 0.5, 0.3];
     const m  = mf * bodyMass;
+    const L  = segLen[label] || 0.1;
+    const I  = m * (kf * L) * (kf * L);  // moment of inertia about CoM
+
     const r_prox     = vget(frame.pos, idx);
     const dLabel     = SEG_DISTAL[label];
     const r_dist_geo = dLabel && si[dLabel] != null ? vget(frame.pos, si[dLabel]) : vadd(r_prox,[0,0,0.1]);
     const r_com      = vadd(r_prox, vscale(vsub(r_dist_geo, r_prox), cf));
-    // ΣF=0: F_prox = −F_dist − m·g  (g = G = [0,0,−9.81])
-    const F_prox = vsub(vscale(G, -m), F_dist);
-    // ΣM=0: M_prox = −M_dist − (r_prox−r_com)×F_prox − (r_dist−r_com)×F_dist
-    const M_prox = vsub(vsub(vneg(M_dist),
+
+    // Inertial terms
+    const a_com = comAccel(label, fi);
+    const omega = frame.angVel?.length > idx*3+2 ? vget(frame.angVel, idx) : [0,0,0];
+    const alpha = frame.angAcc?.length > idx*3+2 ? vget(frame.angAcc, idx) : [0,0,0];
+    const tau_inertial = vadd(vscale(alpha, I), vcross(omega, vscale(omega, I)));
+
+    // Newton: F_prox + F_dist + m·G = m·a_com
+    //       → F_prox = m·a_com − F_dist − m·G
+    const F_prox = vsub(vsub(vscale(a_com, m), F_dist), vscale(G, m));
+
+    // Euler about CoM: M_prox + M_dist + (r_prox−r_com)×F_prox + (r_dist−r_com)×F_dist = τ_inertial
+    //                → M_prox = τ_inertial − M_dist − (r_prox−r_com)×F_prox − (r_dist−r_com)×F_dist
+    const M_prox = vsub(vsub(vsub(tau_inertial, M_dist),
       vcross(vsub(r_prox,       r_com), F_prox)),
       vcross(vsub(r_dist_force, r_com), F_dist));
+
     return { F: F_prox, M: M_prox, r_prox };
   };
 
@@ -297,7 +341,7 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
   });
   const interpF = (t) => Math.max(0, interp(forceData, t - forceOffset, 'time', 'force'));
 
-  const stride = Math.max(1, Math.floor(mvnx.frames.length / 200));
+  const stride = Math.max(1, Math.floor(nf / 200));
   const results = [];
 
   mvnx.frames.forEach((frame, fi) => {
@@ -311,36 +355,44 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
       const UL=`${side}UpperLeg`, LL=`${side}LowerLeg`, FT=`${side}Foot`, TOE=`${side}Toe`;
       const grfVal = side==='Right' ? grf.right : grf.left;
       const r_toe  = vget(frame.pos, si[TOE] ?? si[FT]);
-      const foot   = solve(FT,  [0,0,grfVal], [0,0,0],   r_toe,        frame);
-      const shank  = solve(LL,  vneg(foot.F), vneg(foot.M), foot.r_prox, frame);
-      const thigh  = solve(UL,  vneg(shank.F),vneg(shank.M),shank.r_prox,frame);
+      const foot   = solve(FT,  [0,0,grfVal], [0,0,0],   r_toe,        frame, fi);
+      const shank  = solve(LL,  vneg(foot.F), vneg(foot.M), foot.r_prox, frame, fi);
+      const thigh  = solve(UL,  vneg(shank.F),vneg(shank.M),shank.r_prox,frame, fi);
       return { foot, shank, thigh };
     };
     const R = leg('Right'), L = leg('Left');
 
-    // ── Pelvis (quasi-static, dual hip inputs) ──
-    const r_pelvis = vget(frame.pos, si['Pelvis']);
+    // ── Pelvis (dual hip inputs + inertia) ──
+    const pelvisIdx = si['Pelvis'];
+    const r_pelvis = vget(frame.pos, pelvisIdx);
     const r_L5S1   = si['L5'] != null ? vget(frame.pos, si['L5']) : vadd(r_pelvis,[0,0,0.1]);
-    const [mfP, cfP] = WINTER['Pelvis'];
+    const [mfP, cfP, kfP] = WINTER['Pelvis'];
     const m_p     = mfP * bodyMass;
+    const L_p     = segLen['Pelvis'] || 0.1;
+    const I_p     = m_p * (kfP * L_p) * (kfP * L_p);
     const r_com_p = vadd(r_pelvis, vscale(vsub(r_L5S1, r_pelvis), cfP));
+    const a_com_p = comAccel('Pelvis', fi);
+    const omega_p = frame.angVel?.length > pelvisIdx*3+2 ? vget(frame.angVel, pelvisIdx) : [0,0,0];
+    const alpha_p = frame.angAcc?.length > pelvisIdx*3+2 ? vget(frame.angAcc, pelvisIdx) : [0,0,0];
+    const tau_p_inertial = vadd(vscale(alpha_p, I_p), vcross(omega_p, vscale(omega_p, I_p)));
+
     const F_hR    = vneg(R.thigh.F), M_hR = vneg(R.thigh.M);
     const F_hL    = vneg(L.thigh.F), M_hL = vneg(L.thigh.M);
     const r_hR    = vget(frame.pos, si['RightUpperLeg']);
     const r_hL    = vget(frame.pos, si['LeftUpperLeg']);
-    // ΣF=0: F_L5S1 = −F_hR − F_hL − m_p·g
-    const F_L5S1 = vsub(vsub(vscale(G, -m_p), F_hR), F_hL);
-    // ΣM=0: M_L5S1 = −(r_L5S1−r_com)×F_L5S1 − (r_hR−r_com)×F_hR − (r_hL−r_com)×F_hL − M_hR − M_hL
-    const tau_p  = vadd(vadd(
+
+    // Newton: F_L5S1 + F_hR + F_hL + m_p·G = m_p·a_com_p
+    const F_L5S1 = vsub(vsub(vsub(vscale(a_com_p, m_p), F_hR), F_hL), vscale(G, m_p));
+    // Euler about pelvis CoM:
+    const tau_p = vadd(vadd(vadd(
       vcross(vsub(r_L5S1, r_com_p), F_L5S1),
       vcross(vsub(r_hR,   r_com_p), F_hR)),
-      vadd(vcross(vsub(r_hL, r_com_p), F_hL), vadd(M_hR, M_hL)));
-    const M_L5S1 = vneg(tau_p);
+      vcross(vsub(r_hL,   r_com_p), F_hL)),
+      vadd(M_hR, M_hL));
+    const M_L5S1 = vsub(tau_p_inertial, tau_p);
 
-    // ── Arms top-down, quasi-static ──
-    // Always solve both arms (gravity moments exist even without external force).
-    // External force is only applied to the designated hand(s).
-    const bilateral = handSide === 'bilateral';
+    // ── Arms (top-down) ──
+    const bilateral  = handSide === 'bilateral';
     const forceRight = !handSide || handSide === 'right' || bilateral;
     const forceLeft  = handSide === 'left' || bilateral;
     const dirs       = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
@@ -356,9 +408,9 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
         const fDir = dirs[forceDirKey] || handDir;
         F_app = vscale(fDir, bilateral ? wF * 0.5 : wF);
       }
-      const h = solve(hand,  F_app,       [0,0,0],    r_app,       frame);
-      const f = solve(fore,  vneg(h.F),   vneg(h.M),  h.r_prox,    frame);
-      const u = solve(upper, vneg(f.F),   vneg(f.M),  f.r_prox,    frame);
+      const h = solve(hand,  F_app,       [0,0,0],    r_app,       frame, fi);
+      const f = solve(fore,  vneg(h.F),   vneg(h.M),  h.r_prox,    frame, fi);
+      const u = solve(upper, vneg(f.F),   vneg(f.M),  f.r_prox,    frame, fi);
       return u.M;
     };
 
