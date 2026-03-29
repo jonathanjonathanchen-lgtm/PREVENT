@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo, memo } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, memo, Component } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
   LineChart, Line, AreaChart, Area, ComposedChart,
@@ -604,6 +604,23 @@ function LoginScreen() {
       </div>
     </div>
   );
+}
+
+// ── Error boundary — catches render crashes and shows the error instead of black screen ──
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  componentDidCatch(e, info) { console.error('Render error:', e, info); }
+  render() {
+    if (this.state.error) return (
+      <div style={{background:C.card,border:`1px solid ${C.red}`,borderRadius:10,padding:20,margin:16,color:C.text}}>
+        <div style={{fontWeight:700,color:C.red,marginBottom:8}}>Render error (check console)</div>
+        <pre style={{fontSize:11,color:C.muted,whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{this.state.error?.message}</pre>
+        <button onClick={()=>this.setState({error:null})} style={{marginTop:10,padding:"4px 12px",borderRadius:6,background:C.accent,color:"#000",border:"none",cursor:"pointer",fontSize:12}}>Dismiss</button>
+      </div>
+    );
+    return this.props.children;
+  }
 }
 
 // ── Auth Wrapper ──────────────────────────────────────────────────────────────
@@ -1918,10 +1935,13 @@ function Dashboard({ session }) {
           {/* ── Left column: skeleton viewer + force events panel ── */}
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             {renderSkeletonCore({showForcePanelToggle:false})}
-            {renderForcePanel()}
+            <ErrorBoundary key={activeEventId||'none'}>
+              {renderForcePanel()}
+            </ErrorBoundary>
           </div>
 
           {/* ── Right column: memoized — does NOT re-render on skelFrame changes ── */}
+          <ErrorBoundary>
           <ForcesRightCol
             invDynData={invDynData}
             showMomComponents={showMomComponents}
@@ -1938,6 +1958,7 @@ function Dashboard({ session }) {
             evStart={evStart}
             evEnd={evEnd}
           />
+          </ErrorBoundary>
         </div>
       </div>
     );
