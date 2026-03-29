@@ -1443,17 +1443,7 @@ function Dashboard({ session }) {
   const renderForcePanel = () => {
     const updateEvent = (patch) => setCurEvs(prev =>
       prev.map(e => e.id === activeEventId ? {...e, ...patch} : e));
-    const handleChartDblClick = (e) => {
-      if(!activeEvent||!averagedEvData.length) return;
-      const container=fpChartRef.current; if(!container) return;
-      const rect=container.getBoundingClientRect();
-      const plotLeft=52,plotWidth=rect.width-8-plotLeft;
-      const domainMax=averagedEvData[averagedEvData.length-1]?.time||1;
-      const xFrac=Math.max(0,Math.min(1,(e.clientX-rect.left-plotLeft)/plotWidth));
-      const t=+(xFrac*domainMax).toFixed(3);
-      const near=averagedEvData.reduce((best,d)=>Math.abs(d.time-t)<Math.abs(best.time-t)?d:best,averagedEvData[0]);
-      setPlateauModal({t:near.time,f:near.force,durStr:activeEvent.plateauDur>0?String(activeEvent.plateauDur):'1'});
-    };
+    const skelTime = activeSkelMvnx?.frames?.[Math.min(skelFrame, (activeSkelMvnx?.frames?.length||1)-1)]?.time ?? 0;
     const validTrials=(activeEvent?.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
     const stride=Math.max(1,Math.floor(averagedEvData.length/400));
     const displayData=averagedEvData.filter((_,i)=>i%stride===0);
@@ -1535,6 +1525,10 @@ function Dashboard({ session }) {
                 style={{width:70,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
                   padding:"3px 8px",color:C.accent,fontSize:11}}/>
               <span style={{fontSize:11,color:C.muted}}>s</span>
+              <Btn small onClick={()=>updateEvent({tStart:+skelTime.toFixed(3)})}
+                style={{fontSize:10,padding:"2px 6px"}} title="Set start to current skeleton time">
+                t={skelTime.toFixed(2)}s
+              </Btn>
             </div>
             <div style={{fontSize:11,color:C.muted,marginBottom:2}}>Trials (WiDACS files):</div>
             <div style={{display:"flex",flexDirection:"column",gap:3}}>
@@ -1553,17 +1547,42 @@ function Dashboard({ session }) {
             </div>
             {validTrials>0&&(
               <>
-                <div ref={fpChartRef} style={{height:120}} onDoubleClick={handleChartDblClick}>
+                <div ref={fpChartRef} style={{height:120}}>
                   <ResponsiveContainer>
-                    <LineChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}>
+                    <LineChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}
+                      onClick={e=>{if(e?.activeLabel!=null) setPlateauModal({t:e.activeLabel,f:e.activePayload?.[0]?.value??0,durStr:activeEvent.plateauDur>0?String(activeEvent.plateauDur):'1'});}}>
                       <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
                       <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
                       <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
                       <Tooltip content={Tt}/>
-                      <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Avg force"/>
+                      {activeEvent.stopAt!=null && <ReferenceLine x={activeEvent.stopAt} stroke={C.red} strokeWidth={1.5} strokeDasharray="4 2"/>}
+                      {activeEvent.plateauT!=null && <ReferenceLine x={activeEvent.plateauT} stroke={C.amber} strokeWidth={1.5} strokeDasharray="4 2"/>}
+                      <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Avg force" isAnimationActive={false}/>
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10}}>
+                  <Btn small onClick={()=>{
+                    if(!averagedEvData.length) return;
+                    const peakD=averagedEvData.reduce((a,b)=>b.force>a.force?b:a,averagedEvData[0]);
+                    setPlateauModal({t:peakD.time,f:peakD.force,durStr:activeEvent.plateauDur>0?String(activeEvent.plateauDur):'1'});
+                  }}>Extend at peak</Btn>
+                  {activeEvent.stopAt!=null
+                    ? <Btn small danger onClick={()=>updateEvent({stopAt:null})}>Clear stop</Btn>
+                    : <Btn small onClick={()=>{if(averagedEvData.length){const last=averagedEvData[averagedEvData.length-1];updateEvent({stopAt:+(last.time*0.8).toFixed(3)});}}}>Set stop</Btn>}
+                  {(activeEvent.plateauT!=null||activeEvent.stopAt!=null)&&(
+                    <Btn small danger onClick={()=>updateEvent({plateauT:null,plateauF:null,plateauDur:0,stopAt:null})}>Reset all</Btn>
+                  )}
+                </div>
+                {activeEvent.stopAt!=null&&(
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <span style={{fontSize:11,color:C.muted,minWidth:36}}>Stop:</span>
+                    <input type="number" step="0.01" value={activeEvent.stopAt}
+                      onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>=0)updateEvent({stopAt:+v.toFixed(3)});}}
+                      style={{width:70,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.red,fontSize:11}}/>
+                    <span style={{fontSize:11,color:C.muted}}>s</span>
+                  </div>
+                )}
                 {validTrials>1&&(()=>{
                   const traces=(activeEvent.fileIndices||[]).filter(fi=>fi<forceFilesList.length)
                     .map((fi,i)=>{const f=forceFilesList[fi];if(!f?.data)return null;const s=Math.max(1,Math.floor(f.data.length/200));return{data:f.data.filter((_,j)=>j%s===0),color:CYCLE_COLORS[i%CYCLE_COLORS.length]};}).filter(Boolean);
