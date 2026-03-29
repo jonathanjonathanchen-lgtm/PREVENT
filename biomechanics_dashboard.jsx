@@ -1050,7 +1050,6 @@ function Dashboard({ session }) {
     [mvnxKey]: typeof updater === 'function' ? updater(prev[mvnxKey] || []) : updater,
   }));
   const activeEvent   = curEvs.find(e => e.id === activeEventId) || null;
-  const averagedEvData = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
   const forceFilesList = activeJob?.forceFiles || [];
   const panelData = useMemo(() => {
     const mvnx = activeSkelMvnx;
@@ -1100,6 +1099,8 @@ function Dashboard({ session }) {
       return result;
     } catch(e) { console.error('allEvAveraged crash:', e); return {}; }
   }, [forceEvents, activeJob?.forceFiles]); // eslint-disable-line
+
+  const averagedEvData = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
 
   // Active force event averaged data (preferred over raw file for Dynamics)
   const activeEvForDyn = useMemo(() => {
