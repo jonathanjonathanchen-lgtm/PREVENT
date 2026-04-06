@@ -1553,8 +1553,12 @@ function Dashboard({ session }) {
       prev.map(e => e.id === activeEventId ? {...e, ...patch} : e));
     const skelTime = activeSkelMvnx?.frames?.[Math.min(skelFrame, (activeSkelMvnx?.frames?.length||1)-1)]?.time ?? 0;
     const validTrials=(activeEvent?.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
+    const normEvData = activeEvent ? (allEvNormalized[activeEvent.id] || averagedEvData) : averagedEvData;
+    const isNormalized = activeEvent?.tEnd != null || (activeEvent?.timeSegments?.length > 0);
     const stride=Math.max(1,Math.floor(averagedEvData.length/400));
     const displayData=averagedEvData.filter((_,i)=>i%stride===0);
+    const normStride=Math.max(1,Math.floor(normEvData.length/400));
+    const displayNorm=normEvData.filter((_,i)=>i%normStride===0);
 
     return (
       <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,
@@ -1656,9 +1660,13 @@ function Dashboard({ session }) {
               const srcDur=averagedEvData.length?averagedEvData[averagedEvData.length-1].time:0;
               const tgtDur=activeEvent.tEnd-(activeEvent.tStart||0);
               const ratio=srcDur>0?(tgtDur/srcDur).toFixed(2):'—';
+              const faster=tgtDur<srcDur, slower=tgtDur>srcDur;
               return (
-                <div style={{fontSize:10,color:C.amber,background:C.amber+"12",padding:"4px 8px",borderRadius:4}}>
-                  Normalizing {srcDur.toFixed(2)}s → {tgtDur.toFixed(2)}s ({ratio}× time scale)
+                <div style={{fontSize:10,color:C.amber,background:C.amber+"12",padding:"6px 10px",borderRadius:5,border:`1px solid ${C.amber}30`}}>
+                  <div style={{fontWeight:600,marginBottom:2}}>Time Normalization Active</div>
+                  <div>Recorded: {srcDur.toFixed(2)}s {faster?"compressed":"stretched"} to {tgtDur.toFixed(2)}s ({ratio}×)</div>
+                  {faster&&<div style={{marginTop:2,opacity:.8}}>Force curve plays {(1/parseFloat(ratio)||1).toFixed(1)}× faster on MVNX timeline</div>}
+                  {slower&&<div style={{marginTop:2,opacity:.8}}>Force curve plays {(1/parseFloat(ratio)||1).toFixed(1)}× slower on MVNX timeline</div>}
                 </div>
               );
             })()}
@@ -1717,18 +1725,35 @@ function Dashboard({ session }) {
             </div>
             {validTrials>0&&(
               <>
-                <div ref={fpChartRef} style={{height:120}}>
+                {isNormalized && (
+                  <div style={{fontSize:10,fontWeight:600,color:C.amber,textTransform:"uppercase",letterSpacing:.5,marginBottom:2}}>
+                    Normalized Force Preview
+                  </div>
+                )}
+                <div ref={fpChartRef} style={{height:isNormalized?150:120}}>
                   <ResponsiveContainer>
-                    <LineChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}
-                      onClick={e=>{if(e?.activeLabel!=null) setPlateauModal({t:e.activeLabel,f:e.activePayload?.[0]?.value??0,durStr:activeEvent.plateauDur>0?String(activeEvent.plateauDur):'1'});}}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
-                      <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
-                      <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
-                      <Tooltip content={Tt}/>
-                      {activeEvent.stopAt!=null && <ReferenceLine x={activeEvent.stopAt} stroke={C.red} strokeWidth={1.5} strokeDasharray="4 2"/>}
-                      {activeEvent.plateauT!=null && <ReferenceLine x={activeEvent.plateauT} stroke={C.amber} strokeWidth={1.5} strokeDasharray="4 2"/>}
-                      <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Avg force" isAnimationActive={false}/>
-                    </LineChart>
+                    {isNormalized ? (
+                      <LineChart margin={{left:0,right:8,top:4,bottom:0}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                        <XAxis type="number" dataKey="time" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                        <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
+                        <Tooltip content={Tt}/>
+                        <Line data={displayData} type="monotone" dataKey="force" stroke={C.muted} dot={false} strokeWidth={1} strokeDasharray="4 3" name="Original" opacity={0.5} isAnimationActive={false}/>
+                        <Line data={displayNorm} type="monotone" dataKey="force" stroke={C.amber} dot={false} strokeWidth={2.5} name="Normalized" isAnimationActive={false}/>
+                        <Legend wrapperStyle={{fontSize:9}}/>
+                      </LineChart>
+                    ) : (
+                      <LineChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}
+                        onClick={e=>{if(e?.activeLabel!=null) setPlateauModal({t:e.activeLabel,f:e.activePayload?.[0]?.value??0,durStr:activeEvent.plateauDur>0?String(activeEvent.plateauDur):'1'});}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                        <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                        <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
+                        <Tooltip content={Tt}/>
+                        {activeEvent.stopAt!=null && <ReferenceLine x={activeEvent.stopAt} stroke={C.red} strokeWidth={1.5} strokeDasharray="4 2"/>}
+                        {activeEvent.plateauT!=null && <ReferenceLine x={activeEvent.plateauT} stroke={C.amber} strokeWidth={1.5} strokeDasharray="4 2"/>}
+                        <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Avg force" isAnimationActive={false}/>
+                      </LineChart>
+                    )}
                   </ResponsiveContainer>
                 </div>
                 <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10}}>
