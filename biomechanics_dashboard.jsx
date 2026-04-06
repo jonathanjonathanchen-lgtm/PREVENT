@@ -1292,8 +1292,23 @@ function Dashboard({ session }) {
     const allEvRanges = curEvs.filter(ev => (ev.fileIndices||[]).length > 0).map(ev => {
       const normData = allEvNormalized[ev.id] || allEvAveraged[ev.id] || [];
       const dur = normData.length ? normData[normData.length-1].time : 0;
-      return { id: ev.id, label: ev.label, tStart: ev.tStart||0, tEnd: (ev.tStart||0)+dur, color: ev.id===activeEventId ? C.accent : C.violet };
+      return { id: ev.id, label: ev.label, hand: ev.hand, tStart: ev.tStart||0, tEnd: (ev.tStart||0)+dur, color: ev.id===activeEventId ? C.accent : C.violet };
     });
+    // Detect time overlaps between events that share the same hand
+    const overlapRegions = [];
+    for (let i = 0; i < allEvRanges.length; i++) {
+      for (let j = i + 1; j < allEvRanges.length; j++) {
+        const a = allEvRanges[i], b = allEvRanges[j];
+        // Check hand conflict: same hand, or either is bilateral
+        const handConflict = a.hand === b.hand || a.hand === 'bilateral' || b.hand === 'bilateral'
+          || (a.hand === 'right' && b.hand === 'right') || (a.hand === 'left' && b.hand === 'left');
+        if (!handConflict) continue;
+        const oStart = Math.max(a.tStart, b.tStart), oEnd = Math.min(a.tEnd, b.tEnd);
+        if (oEnd > oStart + 0.01) {
+          overlapRegions.push({ x1: oStart, x2: oEnd, evA: a.label, evB: b.label });
+        }
+      }
+    }
     const curTime   = activeSkelMvnx?.frames?.[Math.min(skelFrame, (activeSkelMvnx?.frames?.length||1)-1)]?.time ?? null;
 
     const jChart = (title, dataKey, color=C.accent) => {
@@ -1311,6 +1326,9 @@ function Dashboard({ session }) {
               {curTime!=null && <ReferenceLine x={curTime} stroke={C.accent} strokeWidth={1.5} strokeDasharray="4 2"/>}
               {allEvRanges.map(ev => (
                 <ReferenceArea key={ev.id} x1={ev.tStart} x2={ev.tEnd} fill={ev.color} fillOpacity={ev.id===activeEventId?0.12:0.06}/>
+              ))}
+              {overlapRegions.map((ol,i) => (
+                <ReferenceArea key={`ol-${i}`} x1={ol.x1} x2={ol.x2} fill={C.red} fillOpacity={0.18} strokeWidth={0}/>
               ))}
               {showMomComponents ? (
                 <>
@@ -1373,6 +1391,23 @@ function Dashboard({ session }) {
                 {showMomComponents ? "Show resultant" : "Show FE / LB / AR"}
               </button>
             </div>
+            {overlapRegions.length > 0 && (
+              <div style={{background:C.red+"15",border:`1px solid ${C.red}40`,borderRadius:8,
+                padding:"8px 12px",fontSize:11,color:C.red,display:"flex",gap:8,alignItems:"flex-start"}}>
+                <span style={{fontSize:14,lineHeight:1,flexShrink:0}}>⚠</span>
+                <div>
+                  <div style={{fontWeight:600,marginBottom:2}}>Force event time overlap detected</div>
+                  <div style={{color:C.red+"cc"}}>
+                    Forces are being summed in overlapping regions (red bands on charts). This may double-count loads on the same hand.
+                  </div>
+                  <div style={{marginTop:4,fontSize:10,color:C.red+"aa"}}>
+                    {overlapRegions.map((ol,i) => (
+                      <div key={i}>"{ol.evA}" & "{ol.evB}" overlap {ol.x1.toFixed(2)}–{ol.x2.toFixed(2)}s</div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
             {!hasLS && (
               <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
                 padding:"8px 12px",fontSize:11,color:C.amber}}>
@@ -1560,6 +1595,23 @@ function Dashboard({ session }) {
     const normStride=Math.max(1,Math.floor(normEvData.length/400));
     const displayNorm=normEvData.filter((_,i)=>i%normStride===0);
 
+    // Detect overlap between events on same hand
+    const panelEvRanges = curEvs.filter(ev => (ev.fileIndices||[]).length > 0).map(ev => {
+      const nd = allEvNormalized[ev.id] || allEvAveraged[ev.id] || [];
+      const dur = nd.length ? nd[nd.length-1].time : 0;
+      return { id: ev.id, hand: ev.hand, tStart: ev.tStart||0, tEnd: (ev.tStart||0)+dur };
+    });
+    const overlappingIds = new Set();
+    for (let i = 0; i < panelEvRanges.length; i++) {
+      for (let j = i + 1; j < panelEvRanges.length; j++) {
+        const a = panelEvRanges[i], b = panelEvRanges[j];
+        const handConflict = a.hand === b.hand || a.hand === 'bilateral' || b.hand === 'bilateral';
+        if (!handConflict) continue;
+        const oStart = Math.max(a.tStart, b.tStart), oEnd = Math.min(a.tEnd, b.tEnd);
+        if (oEnd > oStart + 0.01) { overlappingIds.add(a.id); overlappingIds.add(b.id); }
+      }
+    }
+
     return (
       <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,
         display:"flex",flexDirection:"column",gap:10,overflow:"auto",maxHeight:"calc(100vh - 200px)"}}>
@@ -1580,15 +1632,21 @@ function Dashboard({ session }) {
           {curEvs.map(ev=>{
             const nTrials=(ev.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
             const isActive=ev.id===activeEventId;
+            const hasOverlap=overlappingIds.has(ev.id);
             const avgData=allEvAveraged[ev.id]||[];
             const peakF=avgData.length?Math.max(...avgData.map(d=>d.force)):0;
+            const borderColor=hasOverlap?C.red:isActive?C.accent:C.border;
             return (
               <div key={ev.id} onClick={()=>setActiveEventId(ev.id)} style={{
                 display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,cursor:"pointer",
-                background:isActive?C.accent+"18":"transparent",border:`1px solid ${isActive?C.accent:C.border}`}}>
+                background:hasOverlap?C.red+"10":isActive?C.accent+"18":"transparent",
+                border:`1px solid ${borderColor}`}}>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,fontWeight:isActive?600:400,color:isActive?C.accent:C.text,
-                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ev.label}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:5}}>
+                    <span style={{fontSize:12,fontWeight:isActive?600:400,color:isActive?C.accent:C.text,
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ev.label}</span>
+                    {hasOverlap&&<span style={{fontSize:9,color:C.red,background:C.red+"20",padding:"1px 5px",borderRadius:3,fontWeight:600,flexShrink:0}}>OVERLAP</span>}
+                  </div>
                   <div style={{fontSize:10,color:C.muted}}>
                     {ev.type} · {ev.hand} · {nTrials} trial{nTrials!==1?'s':''}
                     {peakF>0&&<span style={{color:C.violet,marginLeft:4}}>· {peakF.toFixed(0)} N peak</span>}
