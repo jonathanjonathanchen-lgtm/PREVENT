@@ -250,7 +250,7 @@ const SEG_DISTAL = {
 // Angular velocity/acceleration taken directly from MVNX.
 // Segment inertia from Winter (2009) radius of gyration.
 // Bottom-up from LoadSOL GRF for L5/S1; top-down from WiDACS for shoulders.
-function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDirKey, handSide) {
+function computeInvDyn(mvnx, bodyMass, lsfData, forceEventsList) {
   if (!mvnx?.frames?.length || !(bodyMass > 0)) return [];
   const G  = [0, 0, -9.81];
   const si = mvnx.segIndex || {};
@@ -339,7 +339,13 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
     right: Math.max(0, interp(lsfData, t, 'time', 'right')),
     left:  Math.max(0, interp(lsfData, t, 'time', 'left')),
   });
-  const interpF = (t) => Math.max(0, interp(forceData, t - forceOffset, 'time', 'force'));
+  const dirs = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
+  const interpEvForce = (ev, t) => {
+    const localT = t - (ev.tStart || 0);
+    if (!ev.data?.length || localT < 0) return 0;
+    if (localT > ev.data[ev.data.length - 1].time + 0.01) return 0;
+    return Math.max(0, interp(ev.data, localT, 'time', 'force'));
+  };
 
   const stride = Math.max(1, Math.floor(nf / 200));
   const results = [];
@@ -348,7 +354,6 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
     if (fi % stride !== 0 || !frame.pos?.length) return;
     const t   = frame.time;
     const grf = interpGRF(t);
-    const wF  = interpF(t);
 
     // ── Legs (bottom-up) ──
     const leg = (side) => {
@@ -391,12 +396,9 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
       vadd(M_hR, M_hL));
     const M_L5S1 = vsub(tau_p_inertial, tau_p);
 
-    // ── Arms (top-down) ──
-    const bilateral  = handSide === 'bilateral';
-    const forceRight = !handSide || handSide === 'right' || bilateral;
-    const forceLeft  = handSide === 'left' || bilateral;
-    const dirs       = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
-    const armSolve   = (cap, applyForce) => {
+    // ── Arms (top-down) — sum forces from ALL events ──
+    const armSolve = (cap) => {
+      const sideLower = cap.toLowerCase();
       const hand = `${cap}Hand`, fore = `${cap}ForeArm`, upper = `${cap}UpperArm`;
       if (si[hand] == null) return null;
       const r_wrist = vget(frame.pos, si[hand]);
@@ -404,9 +406,15 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
       const handDir = vnorm(vsub(r_wrist, r_elbow));
       const r_app   = vadd(r_wrist, vscale(handDir, 0.10));
       let F_app = [0,0,0];
-      if (applyForce && forceData?.length) {
-        const fDir = dirs[forceDirKey] || handDir;
-        F_app = vscale(fDir, bilateral ? wF * 0.5 : wF);
+      for (const ev of (forceEventsList || [])) {
+        const isBilateral = ev.hand === 'bilateral';
+        const applies = (sideLower === 'right' && (ev.hand === 'right' || isBilateral)) ||
+                        (sideLower === 'left'  && (ev.hand === 'left'  || isBilateral));
+        if (!applies || !ev.data?.length) continue;
+        const fMag = interpEvForce(ev, t);
+        if (fMag <= 0) continue;
+        const fDir = dirs[ev.dirKey] || handDir;
+        F_app = vadd(F_app, vscale(fDir, isBilateral ? fMag * 0.5 : fMag));
       }
       const h = solve(hand,  F_app,       [0,0,0],    r_app,       frame, fi);
       const f = solve(fore,  vneg(h.F),   vneg(h.M),  h.r_prox,    frame, fi);
@@ -423,8 +431,8 @@ function computeInvDyn(mvnx, bodyMass, lsfData, forceData, forceOffset, forceDir
     results.push({
       t:        +t.toFixed(3),
       L5S1:     fmt(M_L5S1),
-      shoulderR: fmt(armSolve('Right', forceRight) || [0,0,0]),
-      shoulderL: fmt(armSolve('Left',  forceLeft)  || [0,0,0]),
+      shoulderR: fmt(armSolve('Right') || [0,0,0]),
+      shoulderL: fmt(armSolve('Left')  || [0,0,0]),
     });
   });
   return results;
@@ -480,6 +488,52 @@ function computeAveraged(event, forceFiles) {
     return [...pre, ...ext];
   }
   return result;
+}
+
+// ── Force time normalization (simple + piecewise segment warping) ────────────
+function normalizeForceTime(avgData, event) {
+  if (!avgData?.length) return avgData;
+  const srcDur = avgData[avgData.length - 1].time;
+  if (srcDur <= 0) return avgData;
+  const origDt = avgData.length > 1 ? avgData[1].time - avgData[0].time : 0.002;
+  const lerpF = (data, t) => {
+    const i = data.findIndex(d => d.time >= t);
+    if (i <= 0) return data[0]?.force ?? 0;
+    if (i >= data.length) return data[data.length - 1]?.force ?? 0;
+    const d0 = data[i - 1], d1 = data[i];
+    return d0.force + (t - d0.time) / ((d1.time - d0.time) || 1) * (d1.force - d0.force);
+  };
+
+  // Advanced: piecewise segment normalization
+  if (event.timeSegments?.length) {
+    const result = [];
+    let tgtOffset = 0;
+    for (const seg of event.timeSegments) {
+      const srcLen = (seg.srcEnd - seg.srcStart) || 1;
+      const tgtDur = seg.tgtDur || srcLen;
+      const ratio = srcLen / tgtDur;
+      for (let lt = 0; lt < tgtDur + origDt * 0.5; lt += origDt) {
+        const srcT = seg.srcStart + lt * ratio;
+        result.push({ time: +(tgtOffset + lt).toFixed(4), force: +lerpF(avgData, srcT).toFixed(1) });
+      }
+      tgtOffset += tgtDur;
+    }
+    return result;
+  }
+
+  // Simple: if tEnd is set, linearly warp entire curve to target duration
+  if (event.tEnd != null) {
+    const tgtDur = event.tEnd - (event.tStart || 0);
+    if (tgtDur <= 0 || Math.abs(tgtDur - srcDur) < 0.01) return avgData;
+    const ratio = srcDur / tgtDur;
+    const result = [];
+    for (let t = 0; t <= tgtDur + origDt * 0.5; t += origDt) {
+      result.push({ time: +t.toFixed(4), force: +lerpF(avgData, t * ratio).toFixed(1) });
+    }
+    return result;
+  }
+
+  return avgData;
 }
 
 // ── Skeleton projection (XSENS Z-up) ─────────────────────────────────────────
@@ -795,13 +849,8 @@ function Dashboard({ session }) {
 
   const activeJob = jobs.find(j => j.id === activeJobId);
 
-  // Derived force file — per-file offset + direction from forceFileSets
-  const activeForce      = activeJob?.forceFiles?.[activeForceIdx] ?? null;
-  const _afSets          = forceFileSets[activeForce?.storagePath] ?? {};
-  const forceOffset      = _afSets.offset  ?? 0;
-  const forceDirKey      = _afSets.dirKey   ?? 'hand';
-  const setForceOffset   = v => { if (!activeForce) return; setForceFileSets(p => ({...p, [activeForce.storagePath]: {...(p[activeForce.storagePath]||{}), offset: v}})); };
-  const setForceDirKey   = v => { if (!activeForce) return; setForceFileSets(p => ({...p, [activeForce.storagePath]: {...(p[activeForce.storagePath]||{}), dirKey: v}})); };
+  // Legacy per-file force reference (kept for DB compat; force events are the primary path now)
+  const activeForce      = activeJob?.forceFiles?.[activeForceIdx] ?? null; // eslint-disable-line
 
   // ── Load all jobs on mount ────────────────────────────────────────────────
   useEffect(() => {
@@ -1117,14 +1166,6 @@ function Dashboard({ session }) {
     return () => clearInterval(id);
   }, [skelPlaying, activeJob, skelFileIdx, skelSpeed]);
 
-  // ── Derived force data ────────────────────────────────────────────────────
-  const shiftedForce = useMemo(() => {
-    if (!activeForce?.data) return [];
-    return activeForce.data.map(d => ({...d, time:+(d.time+forceOffset).toFixed(3)}));
-  }, [activeForce, forceOffset]);
-
-  const extendedForce = null;
-
   // Memoised joint panel data — only recomputes when panels or MVNX file changes,
   // NOT on every skelFrame tick. This prevents Recharts from reinitialising every frame.
   const activeSkelMvnx = activeJob?.mvnxFiles?.[skelFileIdx];
@@ -1189,29 +1230,41 @@ function Dashboard({ session }) {
 
   const averagedEvData = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
 
-  // Active force event averaged data (preferred over raw file for Dynamics)
-  const activeEvForDyn = useMemo(() => {
+  // Pre-compute normalized force data for all events (time-warped per tEnd / segments)
+  const allEvNormalized = useMemo(() => {
     try {
-      const allEvs = Object.values(forceEvents).flat();
-      const ev = allEvs.find(e => e.id === activeEventId);
-      if (!ev || !(ev.fileIndices?.length)) return null;
-      const avg = allEvAveraged[ev.id] || [];
-      if (!avg.length) return null;
-      // Shift to align with XSENS timeline (tStart)
-      return { data: avg.map(d => ({...d, time: +(d.time + (ev.tStart||0)).toFixed(3)})), tStart: ev.tStart||0, dirKey: ev.hand==='left'?'-y':'+y', hand: ev.hand||'right' };
-    } catch(e) { console.error('activeEvForDyn crash:', e); return null; }
-  }, [forceEvents, activeEventId, activeJob?.forceFiles]); // eslint-disable-line
+      const result = {};
+      for (const evs of Object.values(forceEvents)) {
+        for (const ev of evs) {
+          result[ev.id] = normalizeForceTime(allEvAveraged[ev.id] || [], ev);
+        }
+      }
+      return result;
+    } catch(e) { console.error('allEvNormalized crash:', e); return {}; }
+  }, [forceEvents, allEvAveraged]);
+
+  // Build force events list for dynamics from ALL events for current MVNX
+  const dynForceEvents = useMemo(() => {
+    try {
+      return (curEvs || [])
+        .filter(ev => (ev.fileIndices || []).length > 0)
+        .map(ev => ({
+          data: allEvNormalized[ev.id] || [],
+          tStart: ev.tStart || 0,
+          dirKey: ev.direction || 'auto',
+          hand: ev.hand || 'right',
+        }))
+        .filter(ev => ev.data.length > 0);
+    } catch(e) { console.error('dynForceEvents crash:', e); return []; }
+  }, [curEvs, allEvNormalized]);
 
   // Inverse dynamics — recomputes only when inputs change, NOT per frame
+  // Now uses ALL force events simultaneously, not just the active one
   const invDynData = useMemo(() => {
     try {
-      const fd       = activeEvForDyn?.data || activeForce?.data;
-      const fDir     = activeEvForDyn?.dirKey || forceDirKey;
-      const fOff     = activeEvForDyn ? 0 : (activeLsf?.blipTime ?? forceOffset);
-      const handSide = activeEvForDyn?.hand || 'right';
-      return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, fd, fOff, fDir, handSide);
+      return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, dynForceEvents);
     } catch(e) { console.error('invDynData crash:', e); return []; }
-  }, [activeSkelMvnx, bodyMass, clippedLsf, activeForce, forceOffset, forceDirKey, activeEvForDyn]); // eslint-disable-line
+  }, [activeSkelMvnx, bodyMass, clippedLsf, dynForceEvents]);
 
   // ── Forces right column chart data (memoized — expensive computation) ──
   const forcesChartData = useMemo(() => {
@@ -1235,9 +1288,12 @@ function Dashboard({ session }) {
     const hasMvnx   = !!activeSkelMvnx?.frames?.length;
     const hasData   = invDynData?.length > 0;
     const hasLS     = !!clippedLsf?.length;
-    const evStart   = activeEvent?.tStart ?? null;
-    const evDur     = averagedEvData.length ? averagedEvData[averagedEvData.length-1].time : 0;
-    const evEnd     = evStart != null ? evStart + evDur : null;
+    // Compute time ranges for ALL force events (not just active)
+    const allEvRanges = curEvs.filter(ev => (ev.fileIndices||[]).length > 0).map(ev => {
+      const normData = allEvNormalized[ev.id] || allEvAveraged[ev.id] || [];
+      const dur = normData.length ? normData[normData.length-1].time : 0;
+      return { id: ev.id, label: ev.label, tStart: ev.tStart||0, tEnd: (ev.tStart||0)+dur, color: ev.id===activeEventId ? C.accent : C.violet };
+    });
     const curTime   = activeSkelMvnx?.frames?.[Math.min(skelFrame, (activeSkelMvnx?.frames?.length||1)-1)]?.time ?? null;
 
     const jChart = (title, dataKey, color=C.accent) => {
@@ -1253,9 +1309,9 @@ function Dashboard({ session }) {
               <Tooltip content={Tt}/>
               <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
               {curTime!=null && <ReferenceLine x={curTime} stroke={C.accent} strokeWidth={1.5} strokeDasharray="4 2"/>}
-              {evStart!=null && evEnd!=null && (
-                <ReferenceArea x1={evStart} x2={evEnd} fill={C.accent} fillOpacity={0.08}/>
-              )}
+              {allEvRanges.map(ev => (
+                <ReferenceArea key={ev.id} x1={ev.tStart} x2={ev.tEnd} fill={ev.color} fillOpacity={ev.id===activeEventId?0.12:0.06}/>
+              ))}
               {showMomComponents ? (
                 <>
                   <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE (flex/ext)" isAnimationActive={false}/>
@@ -1421,7 +1477,7 @@ function Dashboard({ session }) {
             const lHi=segLabels.findIndex(l=>/left.*hand|hand.*left/i.test(l));
             curEvs.forEach(ev=>{
               if(!ev.fileIndices?.length) return;
-              const avgData=allEvAveraged[ev.id]||[];
+              const avgData=allEvNormalized[ev.id]||allEvAveraged[ev.id]||[];
               if(!avgData.length) return;
               const localT=ft-(ev.tStart||0);
               if(localT<0||localT>avgData[avgData.length-1].time+0.5) return;
@@ -1508,7 +1564,7 @@ function Dashboard({ session }) {
           <Btn small active onClick={()=>{
             const id=`ev_${Date.now()}`;
             const newEv={id,label:`Event ${curEvs.length+1}`,type:'push',hand:'right',
-              direction:'auto',tStart:0,fileIndices:[],stopAt:null,plateauT:null,plateauF:null,plateauDur:0};
+              direction:'auto',tStart:0,tEnd:null,fileIndices:[],stopAt:null,plateauT:null,plateauF:null,plateauDur:0,timeSegments:[]};
             setCurEvs(prev=>[...prev,newEv]);
             setActiveEventId(id);
           }}>+ New</Btn>
@@ -1579,9 +1635,71 @@ function Dashboard({ session }) {
               <span style={{fontSize:11,color:C.muted}}>s</span>
               <Btn small onClick={()=>updateEvent({tStart:+skelTime.toFixed(3)})}
                 style={{fontSize:10,padding:"2px 6px"}} title="Set start to current skeleton time">
-                t={skelTime.toFixed(2)}s
+                ⏱ Set
               </Btn>
             </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted,minWidth:36}}>End:</span>
+              <input type="number" step="0.01" value={activeEvent.tEnd??''}
+                placeholder={averagedEvData.length ? ((activeEvent.tStart||0) + averagedEvData[averagedEvData.length-1].time).toFixed(2) : 'auto'}
+                onChange={e=>{const v=e.target.value;updateEvent({tEnd:v===''?null:parseFloat(v)||0});}}
+                style={{width:70,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
+                  padding:"3px 8px",color:activeEvent.tEnd!=null?C.amber:C.muted,fontSize:11}}/>
+              <span style={{fontSize:11,color:C.muted}}>s</span>
+              <Btn small onClick={()=>updateEvent({tEnd:+skelTime.toFixed(3)})}
+                style={{fontSize:10,padding:"2px 6px"}} title="Set end to current skeleton time">
+                ⏱ Set
+              </Btn>
+              {activeEvent.tEnd!=null&&<Btn small danger onClick={()=>updateEvent({tEnd:null,timeSegments:[]})}>✕</Btn>}
+            </div>
+            {activeEvent.tEnd!=null&&(()=>{
+              const srcDur=averagedEvData.length?averagedEvData[averagedEvData.length-1].time:0;
+              const tgtDur=activeEvent.tEnd-(activeEvent.tStart||0);
+              const ratio=srcDur>0?(tgtDur/srcDur).toFixed(2):'—';
+              return (
+                <div style={{fontSize:10,color:C.amber,background:C.amber+"12",padding:"4px 8px",borderRadius:4}}>
+                  Normalizing {srcDur.toFixed(2)}s → {tgtDur.toFixed(2)}s ({ratio}× time scale)
+                </div>
+              );
+            })()}
+            {/* Advanced: piecewise time segment normalization */}
+            {activeEvent.tEnd!=null&&(
+              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <span style={{fontSize:10,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:.5}}>Advanced: Segment Warping</span>
+                  <Btn small onClick={()=>{
+                    const srcDur=averagedEvData.length?averagedEvData[averagedEvData.length-1].time:1;
+                    const segs=activeEvent.timeSegments||[];
+                    const lastEnd=segs.length?segs[segs.length-1].srcEnd:0;
+                    updateEvent({timeSegments:[...segs,{srcStart:+lastEnd.toFixed(2),srcEnd:+srcDur.toFixed(2),tgtDur:+(srcDur-lastEnd).toFixed(2)}]});
+                  }} style={{fontSize:9}}>+ Segment</Btn>
+                </div>
+                {(activeEvent.timeSegments||[]).length===0&&(
+                  <div style={{fontSize:10,color:C.muted,fontStyle:"italic",marginBottom:4}}>
+                    No segments — whole curve normalized uniformly. Add segments to warp parts independently.
+                  </div>
+                )}
+                {(activeEvent.timeSegments||[]).map((seg,si_)=>(
+                  <div key={si_} style={{display:"flex",gap:4,alignItems:"center",marginBottom:4,fontSize:10}}>
+                    <span style={{color:C.muted}}>#{si_+1}</span>
+                    <input type="number" step="0.1" value={seg.srcStart} onChange={e=>{
+                      const segs=[...(activeEvent.timeSegments||[])];segs[si_]={...segs[si_],srcStart:parseFloat(e.target.value)||0};updateEvent({timeSegments:segs});
+                    }} style={{width:48,background:C.bg,border:`1px solid ${C.border}`,borderRadius:3,padding:"2px 4px",color:C.text,fontSize:10}} title="Source start (s)"/>
+                    <span style={{color:C.muted}}>→</span>
+                    <input type="number" step="0.1" value={seg.srcEnd} onChange={e=>{
+                      const segs=[...(activeEvent.timeSegments||[])];segs[si_]={...segs[si_],srcEnd:parseFloat(e.target.value)||0};updateEvent({timeSegments:segs});
+                    }} style={{width:48,background:C.bg,border:`1px solid ${C.border}`,borderRadius:3,padding:"2px 4px",color:C.text,fontSize:10}} title="Source end (s)"/>
+                    <span style={{color:C.muted}}>⇒</span>
+                    <input type="number" step="0.1" value={seg.tgtDur} onChange={e=>{
+                      const segs=[...(activeEvent.timeSegments||[])];segs[si_]={...segs[si_],tgtDur:parseFloat(e.target.value)||0.1};updateEvent({timeSegments:segs});
+                    }} style={{width:48,background:C.bg,border:`1px solid ${C.amber}60`,borderRadius:3,padding:"2px 4px",color:C.amber,fontSize:10}} title="Target duration (s)"/>
+                    <span style={{color:C.muted}}>s</span>
+                    <span onClick={()=>{const segs=(activeEvent.timeSegments||[]).filter((_,j)=>j!==si_);updateEvent({timeSegments:segs});}}
+                      style={{color:C.red,cursor:"pointer",fontSize:12,lineHeight:1}}>✕</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{fontSize:11,color:C.muted,marginBottom:2}}>Trials (WiDACS files):</div>
             <div style={{display:"flex",flexDirection:"column",gap:3}}>
               {forceFilesList.map((f,fi)=>{
