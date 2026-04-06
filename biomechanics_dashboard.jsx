@@ -1,108 +1,2489 @@
-import { useState, useMemo } from "react";
-import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart } from "recharts";
+import { useState, useRef, useCallback, useEffect, useMemo, Component } from "react";
+import { createClient } from "@supabase/supabase-js";
+import {
+  LineChart, Line, AreaChart, Area, ComposedChart,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, ReferenceLine, ReferenceArea
+} from "recharts";
 
-const D={"Trial 1":{"time":[0.0,0.4,0.8,1.2,1.6,2.0,2.4,2.8,3.2,3.6,4.0,4.4,4.8,5.2,5.6,6.0,6.4,6.8,7.2,7.6,8.0,8.4,8.8,9.2,9.6,10.0,10.4,10.8,11.2,11.6,12.0,12.4,12.8,13.2,13.6,14.0,14.4,14.8,15.2,15.6,16.0,16.4,16.8,17.2,17.6,18.0,18.4,18.8,19.2,19.6,20.0,20.4,20.8,21.2,21.6,22.0,22.4,22.8,23.2,23.6,24.0,24.4,24.8,25.2,25.6,26.0,26.4,26.8,27.2,27.6,28.0,28.4,28.8,29.2,29.6,30.0,30.4,30.8,31.2,31.6],"dur":32.0,"ja":{"L5S1_FE":[0.08,0.36,0.55,0.62,0.68,0.97,1.14,0.77,-0.26,0.88,-0.24,0.47,2.34,2.11,3.53,2.81,2.8,3.31,3.09,2.57,4.19,3.58,3.43,3.71,4.63,4.99,5.82,5.81,5.72,4.2,3.63,3.95,3.92,1.95,2.78,2.45,2.01,1.5,3.35,3.08,1.95,2.94,3.22,2.34,3.01,3.29,2.5,2.95,3.37,2.46,1.78,2.19,1.92,0.41,0.13,1.14,1.63,1.79,3.27,2.85,2.62,2.94,2.27,2.09,2.31,2.08,0.43,1.38,1.4,1.13,0.61,-0.58,0.36,0.29,0.16,-0.22,-0.37,-0.58,-0.7,-0.41],"L5S1_LB":[-0.5,-0.64,-0.6,-0.62,-0.65,-0.6,-0.63,-0.49,-0.56,-1.23,-1.26,-2.52,-0.53,2.97,0.61,-3.19,0.39,1.82,-3.3,-2.25,0.01,-3.01,-4.71,-2.34,-3.33,-2.52,-0.94,2.32,-0.59,-2.31,1.49,1.6,-1.01,1.36,5.83,5.69,2.5,4.77,1.85,-0.66,1.2,-0.98,-3.75,-2.08,0.32,-1.98,-2.88,0.83,-1.8,-3.62,-0.46,0.68,-1.49,-1.8,1.06,-0.34,-1.68,2.18,-1.13,-4.33,-0.54,0.18,-2.78,-1.66,1.57,0.41,-0.07,2.49,1.27,-2.21,-0.51,-0.52,-1.1,-1.34,-1.01,-1.01,-1.22,-1.36,-1.43,-1.37],"L5S1_AR":[0.55,0.29,0.3,0.26,0.24,0.22,0.35,0.5,-0.07,0.04,-0.09,-1.34,-2.16,-1.1,2.77,-0.14,-2.94,0.03,1.39,-0.57,3.61,6.85,3.48,4.23,7.3,5.61,-0.84,2.05,4.7,0.7,-1.41,1.25,-0.58,-6.05,-7.22,-4.37,-8.2,-8.84,-1.32,-2.68,-4.76,0.11,0.18,-3.52,-2.06,0.17,-4.01,-2.49,2.8,-0.08,-2.55,0.71,-1.18,-6.16,-5.15,-3.36,-6.79,-6.24,0.16,-0.61,-1.69,0.12,-1.06,-3.38,-1.84,-2.07,-6.41,-4.62,-3.81,-1.51,1.41,0.42,0.9,1.18,1.13,1.2,1.2,1.38,1.53,1.29],"RSh_FE":[6.83,6.68,6.76,6.83,6.85,6.86,7.18,8.01,10.54,26.14,18.95,25.42,41.67,42.98,42.41,39.34,43.03,41.34,41.3,50.15,51.65,52.15,53.02,55.16,58.16,60.35,57.69,57.36,55.03,49.52,48.81,43.19,39.19,41.75,30.5,27.23,26.84,25.0,27.64,27.86,30.13,28.75,27.61,32.84,25.83,23.34,30.41,29.89,35.13,36.87,44.46,39.5,31.52,28.13,16.08,15.48,27.54,35.77,44.52,44.71,48.96,47.02,45.77,50.44,41.96,31.0,23.86,19.13,22.74,31.58,27.14,1.59,5.49,7.38,7.27,6.97,7.45,7.34,7.34,7.43],"LSh_FE":[7.03,6.63,6.46,6.38,6.36,6.61,7.08,8.25,5.02,19.19,15.64,25.4,32.47,29.29,37.03,36.81,36.06,37.87,38.58,34.17,25.11,20.42,9.38,-0.83,10.3,10.33,16.76,8.7,19.18,23.18,24.6,32.97,39.28,45.57,44.85,45.07,49.66,46.6,48.79,48.75,48.75,50.58,50.54,51.55,50.36,50.96,52.74,45.21,41.58,35.63,33.51,38.5,43.15,46.99,42.31,43.34,46.5,40.17,40.04,36.69,34.97,39.45,39.9,40.79,41.5,44.08,44.92,36.92,28.65,32.76,28.78,-2.39,4.64,4.5,5.97,5.25,6.01,6.16,6.14,6.14]},"ergo":{"PT8_FE":[-4.45,-3.91,-3.55,-3.42,-3.3,-2.74,-2.42,-3.13,-5.08,-2.92,-5.05,-3.66,-0.12,-0.64,2.17,0.76,0.74,1.71,1.21,0.32,3.41,1.97,1.7,2.34,3.91,4.73,6.52,6.56,6.31,3.38,2.29,2.97,2.88,-0.94,0.1,-0.33,-0.98,-2.3,1.75,1.3,-0.94,1.0,1.52,-0.01,1.14,1.67,0.36,1.01,1.75,0.09,-1.18,-0.41,-0.9,-3.6,-4.39,-2.38,-1.26,-1.33,1.63,0.85,0.41,1.0,-0.24,-0.52,-0.23,-0.64,-3.69,-2.11,-1.97,-2.4,-3.43,-5.66,-3.92,-4.06,-4.3,-5.04,-5.31,-5.69,-5.9,-5.4],"VT8_FE":[4.65,4.91,5.28,5.43,5.58,6.35,6.81,6.18,4.29,8.98,10.49,7.33,13.3,12.05,14.66,13.53,12.99,13.47,11.88,12.78,11.9,10.99,12.18,13.52,18.14,17.23,19.57,20.58,21.36,15.28,14.34,16.07,14.8,12.23,8.98,8.49,11.87,8.73,14.52,14.43,13.45,14.72,12.89,15.56,13.94,12.87,15.4,13.6,14.32,12.07,10.94,10.75,11.35,11.3,5.66,6.95,12.14,12.15,15.79,13.37,13.2,12.85,10.08,11.93,10.5,9.51,9.97,8.22,6.94,9.52,7.76,7.23,6.91,5.67,5.26,4.54,4.57,4.4,4.12,4.48]},"mom":[0.15,0.66,1.0,1.13,1.24,1.77,2.08,1.4,-0.47,1.6,-0.44,0.86,4.27,3.85,6.43,5.12,5.1,6.03,5.63,4.68,7.63,6.52,6.25,6.76,8.43,9.09,10.59,10.58,10.41,7.65,6.61,7.2,7.14,3.56,5.07,4.47,3.66,2.73,6.11,5.61,3.56,5.36,5.87,4.27,5.49,6.0,4.56,5.38,6.14,4.48,3.25,3.99,3.5,0.75,0.24,2.08,2.97,3.26,5.96,5.19,4.78,5.36,4.14,3.81,4.21,3.79,0.78,2.52,2.55,2.06,1.11,-1.06,0.66,0.53,0.29,-0.4,-0.67,-1.06,-1.28,-0.75],"cum":[0.01,0.24,0.59,1.02,1.48,2.1,2.9,3.61,3.79,4.09,4.51,4.88,6.21,8.0,10.34,12.86,14.78,16.85,18.99,20.97,23.32,25.6,28.11,30.77,34.13,37.6,41.5,45.47,49.59,52.98,55.62,58.69,61.65,63.65,65.32,67.16,69.04,70.13,72.24,74.86,76.3,78.33,80.66,82.47,84.51,86.88,89.04,91.04,93.28,95.61,97.0,98.54,100.12,100.93,101.1,101.69,102.7,104.16,106.13,108.57,110.34,112.45,114.36,115.85,117.48,118.96,119.86,120.83,122.04,123.07,123.45,123.94,124.18,124.43,124.59,124.68,124.91,125.32,125.81,126.19]},"Trial 2":{"time":[0.0,0.4,0.8,1.2,1.6,2.0,2.4,2.8,3.2,3.6,4.0,4.4,4.8,5.2,5.6,6.0,6.4,6.8,7.2,7.6,8.0,8.4,8.8,9.2,9.6,10.0,10.4,10.8,11.2,11.6,12.0,12.4,12.8,13.2,13.6,14.0,14.4,14.8,15.2,15.6,16.0,16.4,16.8,17.2,17.6,18.0,18.4,18.8,19.2,19.6,20.0,20.4,20.8,21.2,21.6,22.0,22.4,22.8,23.2,23.6,24.0,24.4,24.8,25.2,25.6,26.0,26.4,26.8,27.2,27.6,28.0,28.4,28.8,29.2,29.6,30.0],"dur":30.27,"ja":{"L5S1_FE":[0.1,0.46,0.3,0.31,0.5,0.46,-0.13,0.12,0.77,1.38,1.19,3.36,3.28,4.14,3.77,3.5,3.34,2.89,2.67,4.02,3.7,4.34,4.88,4.39,4.32,4.94,4.78,3.16,3.24,2.82,2.69,0.89,2.45,3.31,1.27,2.69,4.1,2.09,3.27,3.12,1.33,2.03,2.52,2.16,3.98,3.88,2.53,2.77,2.76,0.95,2.2,3.07,2.19,2.28,2.81,1.82,1.28,1.34,3.06,3.26,1.83,-0.1,-1.35,-0.7,-0.69,-0.62,-0.66,-0.74,-0.77,-0.52,-0.49,-0.36,-0.88,-1.04,-1.18,-0.94],"L5S1_LB":[-0.99,-1.0,-1.05,-1.0,-1.11,-1.2,-1.08,-1.1,-0.93,-0.91,-1.83,-1.83,2.34,0.77,-3.72,-1.34,0.7,-4.48,-3.97,-1.74,-5.14,-5.65,-2.34,-4.25,-3.81,2.05,-1.66,-2.82,1.09,0.18,-1.03,3.23,3.8,0.35,2.61,1.86,-1.86,-1.08,1.08,-1.78,-1.98,0.07,-2.36,-2.71,1.09,-1.92,-1.84,3.17,0.65,-0.86,1.15,-1.43,-3.28,1.68,0.84,-0.75,4.03,4.35,-0.4,-0.15,-0.33,-2.05,-0.99,-1.02,-1.02,-1.04,-0.98,-0.96,-0.99,-0.94,-0.92,-0.82,-0.72,-0.79,-0.8,-0.8],"L5S1_AR":[-0.5,-0.34,-0.28,-0.38,-0.38,-0.36,-0.28,-0.33,-0.5,-0.16,-0.61,-2.83,-2.57,1.19,-0.54,-3.61,0.96,2.52,-0.17,4.81,7.71,5.19,8.58,8.53,1.83,2.4,4.02,-1.59,-2.97,0.32,-4.77,-7.55,-1.49,-3.49,-8.16,-2.95,-1.38,-4.01,-1.53,-0.2,-4.43,-2.78,-0.76,-4.89,-1.63,1.89,-2.44,-2.39,-0.88,-6.4,-4.98,0.23,-3.13,-2.88,0.22,-5.21,-7.72,-6.53,-5.37,-1.85,0.21,0.43,0.85,0.8,0.62,0.9,1.01,1.09,1.05,0.84,0.62,0.55,0.43,0.53,0.81,0.67],"RSh_FE":[6.44,6.45,6.24,6.37,6.41,6.48,6.17,6.49,7.52,23.71,23.99,26.33,34.94,34.56,34.81,46.08,43.47,42.21,48.02,51.52,51.57,51.45,56.44,56.33,51.72,50.6,42.41,41.15,40.25,37.64,33.16,32.37,22.19,20.11,24.48,20.9,20.18,25.76,24.42,22.12,25.86,19.68,20.28,28.72,30.72,33.97,45.1,33.35,23.56,22.66,21.0,27.56,36.71,38.05,37.36,29.54,20.21,19.21,27.7,27.22,32.82,17.89,3.38,9.66,7.92,8.61,8.5,8.8,8.83,9.23,9.46,9.47,9.47,9.22,9.31,9.2],"LSh_FE":[5.41,5.43,5.37,5.17,5.23,5.35,5.21,5.75,6.65,15.11,26.79,26.21,20.35,32.17,34.71,33.24,34.21,35.59,27.99,15.41,4.1,-6.53,-9.31,2.21,1.54,0.53,33.57,32.71,32.01,39.86,39.86,41.05,43.77,48.3,48.73,48.2,51.04,51.09,46.08,49.45,52.12,49.04,48.6,48.33,44.65,40.67,38.28,37.87,44.12,46.58,43.14,41.88,39.68,38.9,43.76,44.84,41.83,38.83,41.37,41.67,28.25,8.7,-1.66,5.12,4.58,5.42,5.06,5.45,5.1,5.09,5.0,4.92,4.82,5.11,5.23,5.28]},"ergo":{"PT8_FE":[-4.39,-3.71,-4.02,-4.01,-3.64,-3.71,-4.84,-4.37,-3.12,-1.97,-2.32,1.89,1.57,3.3,2.6,2.16,1.79,0.73,0.48,2.97,1.9,3.23,4.48,3.29,3.52,4.9,4.43,1.5,1.55,0.77,0.63,-3.19,-0.02,1.71,-2.4,0.46,3.27,-0.52,1.62,1.36,-1.91,-0.72,0.22,-0.26,2.97,2.75,0.31,0.57,0.66,-2.63,-0.45,1.25,-0.27,-0.31,0.76,-1.03,-2.56,-2.43,1.3,1.62,-1.1,-4.8,-6.88,-5.87,-5.86,-5.75,-5.81,-5.95,-5.99,-5.57,-5.52,-5.29,-6.15,-6.4,-6.62,-6.25],"VT8_FE":[6.01,6.01,5.6,5.54,6.01,6.05,5.32,5.99,6.75,9.39,13.9,19.03,17.94,18.82,16.44,15.99,13.5,11.36,11.83,13.21,11.44,13.37,16.07,15.09,16.87,19.97,20.07,14.39,13.93,12.45,11.34,7.97,11.06,12.85,11.25,13.05,16.12,16.24,13.97,13.67,14.79,12.09,11.48,15.08,15.3,12.95,15.88,12.85,11.21,13.15,10.45,11.69,12.94,11.27,12.74,10.84,7.52,7.26,11.37,12.71,9.6,5.93,5.23,4.07,3.86,3.97,3.8,3.62,3.57,4.25,4.53,4.77,4.11,4.12,4.19,4.77]},"mom":[0.18,0.84,0.55,0.57,0.91,0.84,-0.24,0.22,1.4,2.52,2.17,6.12,5.98,7.54,6.87,6.38,6.09,5.27,4.87,7.32,6.74,7.91,8.89,8.0,7.87,9.0,8.71,5.76,5.9,5.14,4.9,1.62,4.47,6.03,2.32,4.9,7.47,3.81,5.96,5.69,2.42,3.7,4.59,3.94,7.25,7.07,4.61,5.05,5.03,1.73,4.01,5.6,3.99,4.16,5.12,3.32,2.33,2.44,5.58,5.94,3.34,-0.18,-2.46,-1.28,-1.26,-1.13,-1.2,-1.35,-1.4,-0.95,-0.89,-0.66,-1.6,-1.9,-2.15,-1.71],"cum":[0.02,0.3,0.56,0.78,1.12,1.44,1.58,1.67,1.95,2.71,3.77,5.68,8.16,10.88,13.95,16.38,18.95,20.97,23.0,25.47,27.86,31.1,34.38,37.57,40.8,44.44,47.83,50.98,53.25,55.59,57.83,58.68,60.2,62.25,63.39,64.89,67.44,69.16,71.35,73.79,75.42,76.96,78.75,80.44,83.15,85.59,88.08,89.95,91.6,93.01,94.05,95.63,97.52,98.99,100.82,102.58,102.99,103.93,105.45,107.44,109.26,109.99,110.74,111.34,111.86,112.33,112.77,113.26,113.85,114.31,114.68,114.97,115.43,116.14,116.95,117.75]},"ls":{"time":[0.0,0.4,0.8,1.2,1.6,2.0,2.4,2.8,3.2,3.6,4.0,4.4,4.8,5.2,5.6,6.0,6.4,6.8,7.2,7.6,8.0,8.4,8.8,9.2,9.6,10.0,10.4,10.8,11.2,11.6,12.0,12.4,12.8,13.2,13.6,14.0,14.4,14.8,15.2,15.6,16.0,16.4,16.8,17.2,17.6,18.0,18.4,18.8,19.2,19.6,20.0,20.4,20.8,21.2,21.6,22.0,22.4,22.8,23.2,23.6,24.0,24.4,24.8,25.2,25.6,26.0,26.4,26.8,27.2,27.6,28.0,28.4,28.8,29.2,29.6,30.0,30.4,30.8,31.2,31.6,32.0,32.4,32.8,33.2,33.6,34.0,34.4,34.8,35.2,35.6,36.0,36.4],"lt":[738.1,760.2,767.4,761.1,752.4,751.4,755.8,754.6,741.5,763.8,757.1,739.0,746.8,736.9,729.2,745.2,731.9,734.5,781.2,798.7,772.5,785.4,774.4,702.7,686.2,783.8,1369.6,1168.7,7.5,1022.4,1390.0,7.5,208.3,1190.8,96.0,12.4,1270.8,1069.6,2.5,1265.4,1438.1,2.5,1314.3,1505.9,10.0,1198.3,1559.8,12.4,1032.2,1499.5,12.5,1026.0,1494.6,10.0,885.0,1474.6,5.0,862.7,1490.5,7.5,276.7,1164.9,10.0,31.6,1165.9,54.5,29.9,1210.0,338.9,12.5,1302.6,1171.9,5.0,1402.5,1342.7,12.4,1403.9,338.9,464.1,1256.6,760.4,712.5,682.0,670.5,679.4,678.0,675.5,674.0,689.1,696.0,693.1,691.3],"rt":[583.0,584.6,582.7,591.4,593.0,586.2,572.5,591.4,574.4,566.0,567.7,567.8,567.8,579.7,561.1,567.7,572.5,578.9,580.3,575.6,577.3,575.4,577.7,603.5,575.9,582.4,12.5,616.0,1145.8,182.1,0.0,1247.9,1392.0,12.5,1331.7,1410.7,2.5,820.3,1208.3,10.0,301.1,1173.9,17.5,124.1,1161.5,39.4,41.4,1149.5,131.3,31.6,1190.8,148.7,14.8,1159.7,700.0,15.0,1264.2,863.9,20.0,1261.7,1443.2,5.0,1405.2,1454.1,19.9,1331.7,1452.1,5.0,1068.0,1335.0,10.0,704.7,1233.2,10.0,595.4,1276.0,5.0,1020.2,1004.7,178.9,554.6,531.0,576.0,587.2,584.7,583.0,593.9,608.0,584.7,586.6,593.3,598.9],"st":{"left":{"mean":723.8,"max":1620.4},"right":{"mean":648.5,"max":1544.3},"total_mean":1372.3,"total_max":2093.4}},"fg":{"Force Trial (Mar 19)":{"time":[0.0,0.1,0.2,0.3,0.4,0.5,0.6],"force":[6.0,18.0,25.0,33.0,28.0,0.0,0.0],"stats":{"peak_force":33.0,"peak_time":0.296,"impulse":10.756,"pulse_width":0.358,"loading_rate":301.08}},"Force Trial 1 (Mar 24)":{"time":[0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,2.0,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,3.0,3.1,3.2,3.3,3.4,3.5,3.6,3.7,3.8,3.9,4.0,4.1,4.2,4.3,4.4,4.5,4.6,4.7,4.8,4.9,5.0,5.1,5.2,5.3,5.4,5.5,5.6,5.7,5.8,5.9,6.0,6.1,6.2,6.3,6.4,6.5,6.6,6.7,6.8,6.9,7.0,7.1,7.2,7.3,7.4,7.5,7.6,7.7,7.8],"force":[1.0,1.0,5.0,12.0,19.0,28.0,34.0,40.0,42.0,46.0,46.0,47.0,45.0,43.0,40.0,38.0,39.0,40.0,38.0,37.0,37.0,34.0,33.0,34.0,36.0,38.0,36.0,37.0,34.0,34.0,29.0,27.0,27.0,29.0,30.0,29.0,30.0,31.0,31.0,32.0,29.0,32.0,32.0,30.0,33.0,29.0,29.0,28.0,29.0,28.0,27.0,27.0,24.0,23.0,21.0,23.0,22.0,21.0,21.0,22.0,24.0,24.0,24.0,24.0,23.0,22.0,23.0,23.0,24.0,22.0,23.0,21.0,21.0,18.0,17.0,17.0,13.0,2.0,0.0],"stats":{"peak_force":47.0,"peak_time":0.974,"impulse":219.09,"pulse_width":4.804,"loading_rate":290.32}},"Force Trial 2 (Mar 24)":{"time":[0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,2.0,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,3.0,3.1,3.2,3.3,3.4,3.5,3.6,3.7,3.8,3.9,4.0,4.1,4.2,4.3,4.4,4.5,4.6,4.7],"force":[0.0,2.0,4.0,11.0,19.0,26.0,33.0,38.0,42.0,45.0,41.0,37.0,35.0,33.0,31.0,30.0,28.0,24.0,24.0,23.0,24.0,23.0,26.0,29.0,29.0,28.0,24.0,22.0,22.0,22.0,22.0,22.0,24.0,22.0,23.0,22.0,22.0,21.0,21.0,20.0,18.0,16.0,15.0,14.0,15.0,7.0,0.0,0.0],"stats":{"peak_force":45.0,"peak_time":0.898,"impulse":107.32,"pulse_width":1.464,"loading_rate":285.71}}}};
+// ── Supabase ─────────────────────────────────────────────────────────────────
+// Replace with your values from https://app.supabase.com → Settings → API
+const SUPABASE_URL  = "https://sxgmpqmnimvfwrfzvzst.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_6VZcThL-U2X5Je73Xla3NQ_KAhKlOGi";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const BUCKET = "biomechanics-files";
 
-const TABS=["Overview","Lumbar Kinematics","L4/L5 Loading","Ground Reaction Forces","Hand Forces","Pipeline"];
-const C={teal:"#0d9488",amber:"#d97706",rose:"#e11d48",sky:"#0284c7",violet:"#7c3aed",emerald:"#059669",slate:"#475569",bg:"#0f172a",card:"#1e293b",border:"#334155",text:"#e2e8f0",muted:"#94a3b8",accent:"#2dd4bf"};
+// ── Palette ───────────────────────────────────────────────────────────────────
+const C = {
+  teal:"#0d9488", amber:"#d97706", rose:"#e11d48", sky:"#0284c7",
+  violet:"#7c3aed", emerald:"#059669", orange:"#f97316", pink:"#ec4899",
+  bg:"#0f172a", card:"#1e293b", border:"#334155",
+  text:"#e2e8f0", muted:"#94a3b8", accent:"#2dd4bf", red:"#dc2626"
+};
+const CYCLE_COLORS = [C.teal, C.amber, C.rose, C.sky, C.violet, C.emerald, C.orange, C.pink];
+const TABS = ["Skeleton","Cycles","LoadSOL","Forces & Dynamics","Jobs","Pipeline"];
 
-const Stat=({label,value,unit,sub})=>(<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 16px"}}><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{label}</div><div style={{fontSize:22,fontWeight:700,color:C.text}}>{value}<span style={{fontSize:13,color:C.muted,marginLeft:4}}>{unit}</span></div>{sub&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>{sub}</div>}</div>);
+// ── Skeleton bone fallback (Z-up XSENS: x=forward, y=left, z=up) ─────────────
+const BONES = [
+  [0,1],[1,2],[2,3],[3,4],[4,5],[5,6],
+  [4,7],[7,8],[8,9],[9,10],
+  [4,11],[11,12],[12,13],[13,14],
+  [0,15],[15,16],[16,17],[17,18],
+  [0,19],[19,20],[20,21],[21,22]
+];
+const REF_POS = [
+   0.000,  0.000, 1.031,  -0.054,  0.000, 1.105,  -0.054,  0.000, 1.185,
+  -0.054,  0.000, 1.299,  -0.054,  0.000, 1.417,  -0.054,  0.000, 1.617,
+  -0.054,  0.000, 1.708,  -0.054, -0.036, 1.541,  -0.054, -0.230, 1.541,
+  -0.054, -0.518, 1.541,  -0.054, -0.748, 1.541,  -0.054,  0.036, 1.541,
+  -0.054,  0.230, 1.541,  -0.054,  0.518, 1.541,  -0.054,  0.748, 1.541,
+   0.000, -0.078, 1.031,   0.000, -0.078, 0.586,   0.000, -0.078, 0.144,
+   0.187, -0.078, 0.061,   0.000,  0.078, 1.031,   0.000,  0.078, 0.586,
+   0.000,  0.078, 0.144,   0.187,  0.078, 0.061,
+];
 
-const ChartCard=({title,children,h=280})=>(<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:16,marginBottom:16}}><div style={{fontSize:13,fontWeight:600,color:C.accent,marginBottom:12,textTransform:"uppercase",letterSpacing:.5}}>{title}</div><div style={{height:h}}>{children}</div></div>);
+// ── Key joints for clinical analysis ─────────────────────────────────────────
+const KEY_JOINTS = [
+  {r:/jl5s1/i,           lbl:"L4/L5 (jL5S1)",   plane:["FE","LB","AR"]},
+  {r:/jl4l3/i,           lbl:"L3/L4 (jL4L3)",   plane:["FE","LB","AR"]},
+  {r:/jl1t12/i,          lbl:"L1/T12",           plane:["FE","LB","AR"]},
+  {r:/jt9t8/i,           lbl:"T8/T9 (jT9T8)",   plane:["FE","LB","AR"]},
+  {r:/jrightshoulder$/i, lbl:"R Shoulder",       plane:["FE","AR","LB"]},
+  {r:/jleftshoulder$/i,  lbl:"L Shoulder",       plane:["FE","AR","LB"]},
+  {r:/jrightelbow/i,     lbl:"R Elbow",          plane:["FE","AR","LB"]},
+  {r:/jleftelbow/i,      lbl:"L Elbow",          plane:["FE","AR","LB"]},
+  {r:/jrighthip/i,       lbl:"R Hip",            plane:["FE","AR","LB"]},
+  {r:/jlefthip/i,        lbl:"L Hip",            plane:["FE","AR","LB"]},
+  {r:/jrightknee/i,      lbl:"R Knee",           plane:["FE","AR","LB"]},
+  {r:/jleftknee/i,       lbl:"L Knee",           plane:["FE","AR","LB"]},
+];
+// ZXY Euler order from MVNX: index 0 = Z = LB/Abd, index 1 = X = AR/IE, index 2 = Y = FE
+const PLANE_LABELS = ["LB","AR","FE"];
+const PLANE_COLORS = [C.amber, C.rose, C.teal];
+const PLANE_NAMES  = ["Lat Bend / Abd (°)","Axial Rot / IE (°)","Flex/Ext (°)"];
 
-const tt=({active,payload,label})=>{if(!active||!payload?.length)return null;return(<div style={{background:"#0f172aee",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",fontSize:12}}><div style={{color:C.muted,marginBottom:4}}>{label}s</div>{payload.map((p,i)=><div key={i} style={{color:p.color}}>{p.name}: <b>{typeof p.value==='number'?p.value.toFixed(1):p.value}</b></div>)}</div>);};
-
-export default function Dashboard(){
-  const[tab,setTab]=useState(0);
-  const[trial,setTrial]=useState("Trial 1");
-  const[fgTrial,setFgTrial]=useState("Force Trial 1 (Mar 24)");
-  const td=D[trial];const fg=D.fg;
-
-  const jaData=useMemo(()=>td.time.map((t,i)=>({t,fe:td.ja.L5S1_FE[i],lb:td.ja.L5S1_LB[i],ar:td.ja.L5S1_AR[i]})),[trial]);
-  const shData=useMemo(()=>td.time.map((t,i)=>({t,rsh:td.ja.RSh_FE[i],lsh:td.ja.LSh_FE[i]})),[trial]);
-  const momData=useMemo(()=>td.time.map((t,i)=>({t,mom:td.mom[i],cum:td.cum[i]})),[trial]);
-  const ergoData=useMemo(()=>td.time.map((t,i)=>({t,pt8:td.ergo.PT8_FE[i],vt8:td.ergo.VT8_FE[i]})),[trial]);
-  const lsData=useMemo(()=>D.ls.time.map((t,i)=>({t,lt:D.ls.lt[i],rt:D.ls.rt[i],total:(D.ls.lt[i]||0)+(D.ls.rt[i]||0)})),[]);
-  const fgData=useMemo(()=>{const d=fg[fgTrial];return d.time.map((t,i)=>({t,force:d.force[i]}));},[fgTrial]);
-
-  const peakMom=Math.max(...td.mom);const cumFinal=td.cum[td.cum.length-1];const peakFE=Math.max(...td.ja.L5S1_FE);
-
-  const renderOverview=()=>(<div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:20}}>
-      <Stat label="Peak L5/S1 Flexion" value={peakFE.toFixed(1)} unit="°" sub={trial}/><Stat label="Peak L4/L5 Moment" value={peakMom.toFixed(1)} unit="Nm" sub="Proxy estimate"/><Stat label="Cumulative Load" value={cumFinal.toFixed(0)} unit="Nm·s" sub={`${td.dur}s trial`}/><Stat label="GRF Peak" value={D.ls.st.total_max.toFixed(0)} unit="N" sub="LoadSOL"/><Stat label="Hand Force Peak" value="47" unit="N" sub="WiDACS"/><Stat label="Duration" value={td.dur} unit="s" sub="40 Hz"/>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-      <ChartCard title="L5/S1 Flexion/Extension" h={200}><ResponsiveContainer><LineChart data={jaData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="°"/><Tooltip content={tt}/><Line type="monotone" dataKey="fe" stroke={C.teal} dot={false} strokeWidth={2} name="Flex/Ext"/></LineChart></ResponsiveContainer></ChartCard>
-      <ChartCard title="L4/L5 Moment & Cumulative Loading" h={200}><ResponsiveContainer><ComposedChart data={momData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis yAxisId="l" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis yAxisId="r" orientation="right" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><Tooltip content={tt}/><Area yAxisId="r" type="monotone" dataKey="cum" fill={C.teal+"30"} stroke={C.teal} strokeWidth={1.5} name="Cumul. (Nm·s)" dot={false}/><Line yAxisId="l" type="monotone" dataKey="mom" stroke={C.amber} dot={false} strokeWidth={2} name="Moment (Nm)"/></ComposedChart></ResponsiveContainer></ChartCard>
-      <ChartCard title="Ground Reaction Forces" h={200}><ResponsiveContainer><LineChart data={lsData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/><Tooltip content={tt}/><Line type="monotone" dataKey="lt" stroke={C.sky} dot={false} strokeWidth={1.5} name="Left Foot"/><Line type="monotone" dataKey="rt" stroke={C.rose} dot={false} strokeWidth={1.5} name="Right Foot"/></LineChart></ResponsiveContainer></ChartCard>
-      <ChartCard title="Hand Force (WiDACS)" h={200}><ResponsiveContainer><AreaChart data={fgData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/><Tooltip content={tt}/><Area type="monotone" dataKey="force" stroke={C.violet} fill={C.violet+"30"} strokeWidth={2} name="Force" dot={false}/></AreaChart></ResponsiveContainer></ChartCard>
-    </div>
-  </div>);
-
-  const renderLumbar=()=>(<div>
-    <ChartCard title="L5/S1 Joint Angles — 3-Plane Motion" h={300}><ResponsiveContainer><LineChart data={jaData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><Tooltip content={tt}/><Legend wrapperStyle={{fontSize:11,color:C.muted}}/><ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/><Line type="monotone" dataKey="fe" stroke={C.teal} dot={false} strokeWidth={2} name="Flexion/Extension (°)"/><Line type="monotone" dataKey="lb" stroke={C.amber} dot={false} strokeWidth={2} name="Lateral Bending (°)"/><Line type="monotone" dataKey="ar" stroke={C.rose} dot={false} strokeWidth={2} name="Axial Rotation (°)"/></LineChart></ResponsiveContainer></ChartCard>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-      <ChartCard title="Shoulder Flexion/Extension" h={220}><ResponsiveContainer><LineChart data={shData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="°"/><Tooltip content={tt}/><Legend wrapperStyle={{fontSize:11}}/><Line type="monotone" dataKey="rsh" stroke={C.sky} dot={false} strokeWidth={2} name="Right Shoulder"/><Line type="monotone" dataKey="lsh" stroke={C.rose} dot={false} strokeWidth={2} name="Left Shoulder"/></LineChart></ResponsiveContainer></ChartCard>
-      <ChartCard title="Trunk Posture (Ergonomic Angles)" h={220}><ResponsiveContainer><LineChart data={ergoData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="°"/><Tooltip content={tt}/><Legend wrapperStyle={{fontSize:11}}/><ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/><Line type="monotone" dataKey="pt8" stroke={C.emerald} dot={false} strokeWidth={2} name="Pelvis→T8 Flex/Ext"/><Line type="monotone" dataKey="vt8" stroke={C.violet} dot={false} strokeWidth={2} name="Vertical→T8 Flex/Ext"/></LineChart></ResponsiveContainer></ChartCard>
-    </div>
-  </div>);
-
-  const renderLoading=()=>(<div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
-      <Stat label="Peak Moment" value={peakMom.toFixed(1)} unit="Nm"/><Stat label="Mean |Moment|" value={(td.mom.reduce((a,b)=>a+Math.abs(b),0)/td.mom.length).toFixed(1)} unit="Nm"/><Stat label="Cumul. Load" value={cumFinal.toFixed(0)} unit="Nm·s"/><Stat label="Loading Rate" value={(cumFinal/td.dur).toFixed(2)} unit="Nm·s/s"/>
-    </div>
-    <ChartCard title="L4/L5 Moment Proxy (Top-Down Estimate)" h={260}><ResponsiveContainer><ComposedChart data={momData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><Tooltip content={tt}/><ReferenceLine y={0} stroke={C.muted} strokeDasharray="2 2"/><Area type="monotone" dataKey="mom" stroke={C.amber} fill={C.amber+"25"} strokeWidth={2} name="L4/L5 Moment (Nm)" dot={false}/></ComposedChart></ResponsiveContainer></ChartCard>
-    <ChartCard title="Cumulative Loading Over Time" h={260}><ResponsiveContainer><AreaChart data={momData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><Tooltip content={tt}/><Area type="monotone" dataKey="cum" stroke={C.teal} fill={C.teal+"20"} strokeWidth={2.5} name="Cumulative Loading (Nm·s)" dot={false}/></AreaChart></ResponsiveContainer></ChartCard>
-  </div>);
-
-  const renderGRF=()=>(<div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
-      <Stat label="Left Mean" value={D.ls.st.left.mean.toFixed(0)} unit="N"/><Stat label="Left Peak" value={D.ls.st.left.max.toFixed(0)} unit="N"/><Stat label="Right Mean" value={D.ls.st.right.mean.toFixed(0)} unit="N"/><Stat label="Right Peak" value={D.ls.st.right.max.toFixed(0)} unit="N"/>
-    </div>
-    <ChartCard title="Vertical GRF — Left vs Right" h={300}><ResponsiveContainer><LineChart data={lsData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/><Tooltip content={tt}/><Legend wrapperStyle={{fontSize:11}}/><Line type="monotone" dataKey="lt" stroke={C.sky} dot={false} strokeWidth={2} name="Left Foot"/><Line type="monotone" dataKey="rt" stroke={C.rose} dot={false} strokeWidth={2} name="Right Foot"/></LineChart></ResponsiveContainer></ChartCard>
-    <ChartCard title="Combined GRF" h={220}><ResponsiveContainer><AreaChart data={lsData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/><Tooltip content={tt}/><Area type="monotone" dataKey="total" stroke={C.emerald} fill={C.emerald+"20"} strokeWidth={2} name="Total GRF" dot={false}/></AreaChart></ResponsiveContainer></ChartCard>
-  </div>);
-
-  const renderForce=()=>{const fgNames=Object.keys(fg);const fd=fg[fgTrial];return(<div>
-    <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>{fgNames.map(n=><button key={n} onClick={()=>setFgTrial(n)} style={{padding:"6px 14px",borderRadius:6,border:`1px solid ${fgTrial===n?C.accent:C.border}`,background:fgTrial===n?C.accent+"20":"transparent",color:fgTrial===n?C.accent:C.muted,fontSize:12,cursor:"pointer",fontWeight:fgTrial===n?600:400}}>{n}</button>)}</div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:12,marginBottom:20}}>
-      <Stat label="Peak Force" value={fd.stats.peak_force} unit="N"/><Stat label="Time to Peak" value={fd.stats.peak_time} unit="s"/><Stat label="Impulse" value={fd.stats.impulse.toFixed?.(1)??fd.stats.impulse} unit="N·s"/><Stat label="Pulse Width" value={fd.stats.pulse_width} unit="s"/><Stat label="Loading Rate" value={fd.stats.loading_rate.toFixed?.(0)??fd.stats.loading_rate} unit="N/s"/>
-    </div>
-    <ChartCard title={`Hand Force Profile — ${fgTrial}`} h={300}><ResponsiveContainer><ComposedChart data={fgData}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="t" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><Tooltip content={tt}/><ReferenceLine y={fd.stats.peak_force} stroke={C.rose} strokeDasharray="4 4"/><Area type="monotone" dataKey="force" stroke={C.violet} fill={C.violet+"30"} strokeWidth={2.5} name="Force (N)" dot={false}/></ComposedChart></ResponsiveContainer></ChartCard>
-    <ChartCard title="Force Trial Comparison" h={220}><ResponsiveContainer><BarChart data={fgNames.map(n=>({name:n.replace("Force ","").replace(" (Mar 24)","·24").replace(" (Mar 19)","·19"),peak:fg[n].stats.peak_force,impulse:Math.min(fg[n].stats.impulse,50)}))} barGap={4}><CartesianGrid strokeDasharray="3 3" stroke={C.border}/><XAxis dataKey="name" tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border}/><Tooltip content={tt}/><Legend wrapperStyle={{fontSize:11}}/><Bar dataKey="peak" fill={C.violet} name="Peak Force (N)" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer></ChartCard>
-  </div>);};
-
-  const renderPipeline=()=>(<div>
-    <div style={{fontSize:14,color:C.text,lineHeight:1.8,marginBottom:24}}>
-      <p style={{color:C.accent,fontWeight:600,fontSize:16,marginBottom:8}}>End-to-End Research Pipeline</p>
-      <p style={{color:C.muted,fontSize:13}}>This dashboard prototypes the full analysis workflow from your proposal — from raw sensor data through biomechanical modeling to ML classification of low-back MSD risk.</p>
-    </div>
-    {[
-      {s:"1",t:"Data Acquisition",d:"XSENS MVN (40 Hz, 23 segments) · LoadSOL insoles (200 Hz) · WiDACS force gauge (500 Hz)",c:C.sky,det:`Sample: 2 IMU trials (${D["Trial 1"].dur}s, ${D["Trial 2"].dur}s), 1 LoadSOL (36.4s), 3 force gauge trials`},
-      {s:"2",t:"Signal Processing",d:"Quaternion→Euler · Joint angle extraction · Time-series sync · Force event matching",c:C.teal,det:"XSENS: segment orientations, joint angles (ZXY), ergonomic angles, positions & accelerations"},
-      {s:"3",t:"Biomechanical Modelling",d:"Top-down inverse dynamics · Anthropometric scaling · L4/L5 moment from trunk kinematics + hand forces",c:C.amber,det:`Proxy: M = m_trunk × g × L × sin(θ). Peak: ${peakMom.toFixed(1)} Nm. Full model integrates WiDACS hand forces.`},
-      {s:"4",t:"Exposure Metrics",d:"Peak & cumulative L4/L5 moments · Raw vs shift-scaled · Task frequency weighting",c:C.emerald,det:`Cumul. load: ${cumFinal.toFixed(0)} Nm·s over ${D["Trial 1"].dur}s = ${(cumFinal/D["Trial 1"].dur).toFixed(2)} Nm·s/s loading rate`},
-      {s:"5",t:"ML Classification",d:"SVM-RBF kernel · LOOCV · Binary labels from injury records · 10 jobs × 2 workers",c:C.violet,det:"Metrics: Accuracy, PPV, Sensitivity, Specificity, F1, ROC/AUC"},
-    ].map(p=>(<div key={p.s} style={{display:"flex",gap:16,marginBottom:16,alignItems:"flex-start"}}>
-      <div style={{width:36,height:36,borderRadius:"50%",background:p.c+"25",border:`2px solid ${p.c}`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:14,fontWeight:700,color:p.c}}>{p.s}</div>
-      <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 16px"}}>
-        <div style={{fontSize:14,fontWeight:600,color:C.text,marginBottom:4}}>{p.t}</div>
-        <div style={{fontSize:12,color:C.muted,marginBottom:6}}>{p.d}</div>
-        <div style={{fontSize:11,color:p.c,background:p.c+"10",padding:"6px 10px",borderRadius:6,borderLeft:`3px solid ${p.c}`}}>{p.det}</div>
-      </div>
-    </div>))}
-  </div>);
-
-  const panels=[renderOverview,renderLumbar,renderLoading,renderGRF,renderForce,renderPipeline];
-
-  return(<div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
-    <div style={{background:`linear-gradient(135deg,${C.bg},${C.card})`,borderBottom:`1px solid ${C.border}`,padding:"16px 24px"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
-        <div><div style={{fontSize:10,color:C.accent,textTransform:"uppercase",letterSpacing:2,marginBottom:4}}>OBEL · UWaterloo</div><div style={{fontSize:20,fontWeight:700}}>Biomechanics Research Dashboard</div><div style={{fontSize:12,color:C.muted}}>Low-Back MSD Risk Classification · IMU + Force Measurements</div></div>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:11,color:C.muted}}>IMU Trial:</span>{["Trial 1","Trial 2"].map(t=><button key={t} onClick={()=>setTrial(t)} style={{padding:"5px 12px",borderRadius:6,border:`1px solid ${trial===t?C.accent:C.border}`,background:trial===t?C.accent+"20":"transparent",color:trial===t?C.accent:C.muted,fontSize:11,cursor:"pointer",fontWeight:trial===t?600:400}}>{t}</button>)}</div>
-      </div>
-    </div>
-    <div style={{display:"flex",gap:4,padding:"12px 24px",borderBottom:`1px solid ${C.border}`,background:C.card,overflowX:"auto"}}>{TABS.map((t,i)=><button key={t} onClick={()=>setTab(i)} style={{padding:"7px 16px",borderRadius:6,border:"none",background:tab===i?C.accent+"20":"transparent",color:tab===i?C.accent:C.muted,fontSize:12,cursor:"pointer",fontWeight:tab===i?600:400,whiteSpace:"nowrap"}}>{t}</button>)}</div>
-    <div style={{padding:"20px 24px",maxWidth:1100,margin:"0 auto"}}>{panels[tab]()}</div>
-  </div>);
+// ── Read blob/file as text, auto-decompressing gzip ──────────────────────────
+async function blobToText(blob) {
+  const buf = await blob.arrayBuffer();
+  const b = new Uint8Array(buf);
+  if (b[0] === 0x1f && b[1] === 0x8b) {
+    const ds = new DecompressionStream("gzip");
+    const decompressed = await new Response(
+      new Blob([buf]).stream().pipeThrough(ds)
+    ).text();
+    return decompressed;
+  }
+  return new TextDecoder().decode(buf);
 }
+
+// ── MVNX Parser ───────────────────────────────────────────────────────────────
+function parseMVNX(xmlStr) {
+  try {
+    // Repair corrupted MVNX: some exports have a spurious </frames>...</mvnx>
+    // block injected mid-stream, splitting frame data into two halves.
+    // Stitch by removing intermediate closing blocks and fixing the truncated frame tag.
+    const firstClose = xmlStr.indexOf("</mvnx>");
+    const lastClose  = xmlStr.lastIndexOf("</mvnx>");
+    if (firstClose !== -1 && lastClose !== firstClose) {
+      const tail = xmlStr.slice(firstClose + "</mvnx>".length, lastClose + "</mvnx>".length);
+      // The tail starts with a truncated frame tag, e.g. "\nype=" from "<frame type="
+      const repaired = tail.replace(/^\s*ype=/, "\n<frame type=");
+      // Remove the spurious mid-stream closing block
+      const firstFramesClose = xmlStr.lastIndexOf("</frames>", firstClose);
+      xmlStr = xmlStr.slice(0, firstFramesClose) + repaired;
+    } else if (firstClose !== -1) {
+      xmlStr = xmlStr.slice(0, firstClose + "</mvnx>".length);
+    }
+
+    const doc = new DOMParser().parseFromString(xmlStr, "application/xml");
+    const pe = doc.querySelector("parsererror");
+    if (pe) return { ok:false, error:"XML parse error: " + pe.textContent.slice(0, 300) };
+    const subject = doc.querySelector("subject");
+    const frameRate = parseFloat(subject?.getAttribute("frameRate") || "60");
+    const segLabels = [];
+    doc.querySelectorAll("segments > segment").forEach(s => segLabels.push(s.getAttribute("label")));
+    const segIndex = Object.fromEntries(segLabels.map((l,i) => [l,i]));
+    const jointLabels = [];
+    const bones = [];
+    doc.querySelectorAll("joints > joint").forEach(j => {
+      jointLabels.push(j.getAttribute("label"));
+      const c1 = j.querySelector("connector1")?.textContent?.split("/")?.[0];
+      const c2 = j.querySelector("connector2")?.textContent?.split("/")?.[0];
+      if (segIndex[c1] !== undefined && segIndex[c2] !== undefined)
+        bones.push([segIndex[c1], segIndex[c2]]);
+    });
+    const frames = [];
+    doc.querySelectorAll("frames > frame").forEach(f => {
+      if (f.getAttribute("type") !== "normal") return;
+      const ms = parseInt(f.getAttribute("time") || "0");
+      const parse = sel => { const t = f.querySelector(sel)?.textContent?.trim()||""; return t ? t.split(/\s+/).map(Number) : []; };
+      frames.push({ time: ms/1000, pos: parse("position"), ja: parse("jointAngle"),
+        acc:    parse("acceleration"),
+        angVel: parse("angularVelocity"),
+        angAcc: parse("angularAcceleration") });
+    });
+    const duration = frames.length ? frames[frames.length-1].time : 0;
+    return { ok:true, frameRate, segLabels, segIndex, jointLabels, bones, frames, duration };
+  } catch(e) { return { ok:false, error:e.message }; }
+}
+
+// ── LoadSOL Parser ────────────────────────────────────────────────────────────
+function parseLoadSOL(text) {
+  try {
+    const lines = text.split("\n").filter(l => l.trim());
+    let dataStart = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const cols = lines[i].trim().split("\t");
+      if (cols.length >= 5 && !isNaN(parseFloat(cols[0]))) { dataStart = i; break; }
+    }
+    const data = [];
+    for (let i = dataStart; i < lines.length; i++) {
+      const cols = lines[i].trim().split("\t");
+      if (cols.length < 5) continue;
+      const time  = parseFloat(cols[0]);
+      const left  = Math.abs(parseFloat(cols[4])  || 0);
+      const right = Math.abs(parseFloat(cols[9])  || 0);
+      const trig  = Math.max(Math.abs(parseFloat(cols[11]) || 0), Math.abs(parseFloat(cols[12]) || 0));
+      if (!isNaN(time)) data.push({ time, left, right, total: left+right, trig });
+    }
+    let blipTime = null;
+    const firstBlip = data.find(d => d.trig > 5);
+    if (firstBlip) blipTime = firstBlip.time;
+    const leftMax  = data.length ? Math.max(...data.map(d => d.left))  : 0;
+    const rightMax = data.length ? Math.max(...data.map(d => d.right)) : 0;
+    return { ok:true, data, blipTime, stats:{ leftMax, rightMax } };
+  } catch(e) { return { ok:false, error:e.message }; }
+}
+
+// ── Force/WiDACS CSV Parser ───────────────────────────────────────────────────
+function parseForceFile(text) {
+  try {
+    const lines = text.split("\n").filter(l => l.trim());
+    let dataStart = 0;
+    const dataIdx = lines.findIndex(l => l.trim().toUpperCase().startsWith("DATA:"));
+    if (dataIdx >= 0) {
+      dataStart = dataIdx + 2;
+    } else {
+      for (let i = 0; i < lines.length; i++) {
+        const cols = lines[i].trim().split(/[\t,]/);
+        if (!isNaN(parseFloat(cols[0]))) { dataStart = i; break; }
+      }
+    }
+    const data = [];
+    for (let i = dataStart; i < lines.length; i++) {
+      const cols = lines[i].trim().split(/[\t,]/);
+      if (cols.length < 2) continue;
+      const time = parseFloat(cols[0]);
+      const force = parseFloat(cols[1]) || 0;
+      if (!isNaN(time)) data.push({ time, force });
+    }
+    const peak = data.length ? Math.max(...data.map(d => d.force)) : 0;
+    const peakTime = data.find(d => d.force === peak)?.time || 0;
+    const impulse = data.length > 1
+      ? data.slice(1).reduce((s,d,i) => s + (d.force + data[i].force)/2 * (d.time - data[i].time), 0)
+      : 0;
+    return { ok:true, data, stats:{ peak, peakTime, impulse: impulse.toFixed(2) } };
+  } catch(e) { return { ok:false, error:e.message }; }
+}
+
+// ── Vector utilities (global frame, Z-up) ────────────────────────────────────
+const vadd   = (a,b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
+const vsub   = (a,b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+const vscale = (v,s) => [v[0]*s, v[1]*s, v[2]*s];
+const vneg   = a     => [-a[0],-a[1],-a[2]];
+const vcross = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const vmag   = v     => Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+const vnorm  = v     => { const m=vmag(v)||1; return vscale(v,1/m); };
+const vget   = (arr,i) => (arr?.length > i*3+2) ? [arr[i*3],arr[i*3+1],arr[i*3+2]] : [0,0,0];
+
+// ── Winter (2009) Table 4.1 segment parameters: [massFrac, comFracFromProx, kGyrFromCoM] ──
+// XSENS provides joint positions → segment lengths are computed from actual kinematics.
+// Mass fractions and CoM fractions taken directly from Winter (2009) Table 4.1.
+// Trunk segments: Winter groups spine into Pelvis / Abdomen / Thorax / Head+Neck.
+// These are distributed across XSENS spine segments (Pelvis, L5, L3, T12, T8, Neck, Head).
+const WINTER = {
+  // Pelvis  — Winter Table 4.1: Pelvis (L4–L5/greater trochanter): mass=0.142, CoM from prox(L4–L5)=0.105
+  // XSENS Pelvis segment vector goes inferior→superior toward L5/S1; CoM near superior end.
+  Pelvis: [0.142, 0.895, 0.31],
+
+  // L5 + L3  — Winter Abdomen (T12–L1/L4–L5): mass=0.139, CoM from prox(T12–L1)=0.44
+  // Split equally across two XSENS lumbar segments.
+  L5:  [0.070, 0.50, 0.30],
+  L3:  [0.070, 0.44, 0.30],
+
+  // T12 + T8  — Winter Thorax (C7–T1/T12–L1): mass=0.216, CoM from prox(C7–T1)=0.82
+  // CoM is near the lower (T12–L1) end of the thorax; 0.82 applied to upper segment.
+  T12: [0.108, 0.50, 0.30],
+  T8:  [0.108, 0.82, 0.30],
+
+  // Neck + Head  — Winter Head and neck (C7–T1/ear canal): mass=0.081, CoM from prox=1.000
+  // Neck ~0.012 estimated; Head takes remainder.
+  Neck: [0.012, 0.50, 0.30],
+  Head: [0.069, 1.00, 0.495],
+
+  // Shoulder  — Winter Table 4.1: no whole-body fraction listed; CoM from sternoclavicular=0.712
+  RightShoulder: [0.009, 0.712, 0.30], LeftShoulder: [0.009, 0.712, 0.30],
+
+  // Upper extremity  — exact Winter Table 4.1 values
+  RightUpperArm: [0.028, 0.436, 0.322], LeftUpperArm: [0.028, 0.436, 0.322],
+  RightForeArm:  [0.016, 0.430, 0.303], LeftForeArm:  [0.016, 0.430, 0.303],
+  RightHand:     [0.006, 0.506, 0.297], LeftHand:     [0.006, 0.506, 0.297],
+
+  // Lower extremity  — exact Winter Table 4.1 values
+  RightUpperLeg: [0.100, 0.433, 0.323], LeftUpperLeg: [0.100, 0.433, 0.323],
+  RightLowerLeg: [0.0465, 0.433, 0.302], LeftLowerLeg: [0.0465, 0.433, 0.302],
+  RightFoot:     [0.0145, 0.500, 0.475], LeftFoot:     [0.0145, 0.500, 0.475],
+  RightToe:      [0.002, 0.500, 0.300],  LeftToe:      [0.002, 0.500, 0.300],
+};
+// Each segment's geometrical distal reference (for CoM & length)
+const SEG_DISTAL = {
+  Pelvis:'L5', L5:'L3', L3:'T12', T12:'T8', T8:'Neck', Neck:'Head',
+  RightShoulder:'RightUpperArm', RightUpperArm:'RightForeArm', RightForeArm:'RightHand',
+  LeftShoulder:'LeftUpperArm',   LeftUpperArm:'LeftForeArm',   LeftForeArm:'LeftHand',
+  RightUpperLeg:'RightLowerLeg', RightLowerLeg:'RightFoot', RightFoot:'RightToe',
+  LeftUpperLeg:'LeftLowerLeg',   LeftLowerLeg:'LeftFoot',   LeftFoot:'LeftToe',
+};
+
+// ── Inverse Dynamics Engine (Newton-Euler, quasi-dynamic) ────────────────────
+// Includes inertial terms: ΣF = m·a_com, ΣM = I·α + ω×(I·ω)
+// CoM acceleration computed via central difference of MVNX position data.
+// Angular velocity/acceleration taken directly from MVNX.
+// Segment inertia from Winter (2009) radius of gyration.
+// Bottom-up from LoadSOL GRF for L5/S1; top-down from WiDACS for shoulders.
+function computeInvDyn(mvnx, bodyMass, lsfData, forceEventsList) {
+  if (!mvnx?.frames?.length || !(bodyMass > 0)) return [];
+  const G  = [0, 0, -9.81];
+  const si = mvnx.segIndex || {};
+  const nf = mvnx.frames.length;
+  const fps = mvnx.frameRate || 60;
+
+  // Mean segment lengths from first 10 frames
+  const segLen = {};
+  const refFrames = mvnx.frames.slice(0, Math.min(10, nf)).filter(f => f.pos?.length);
+  Object.entries(SEG_DISTAL).forEach(([seg, dSeg]) => {
+    const pi = si[seg], di = si[dSeg];
+    if (pi == null || di == null) return;
+    const lens = refFrames.map(f => vmag(vsub(vget(f.pos,di), vget(f.pos,pi))));
+    segLen[seg] = lens.reduce((a,b)=>a+b,0) / (lens.length||1) || 0.1;
+  });
+
+  // Central-difference step for numerical CoM acceleration (≈100ms window)
+  const diffH = Math.max(1, Math.round(fps / 10));
+
+  // CoM position for a given segment in a given frame
+  const comPos = (label, frame) => {
+    const idx = si[label];
+    if (idx == null) return [0,0,0];
+    const [, cf] = WINTER[label] || [0, 0.5];
+    const r_prox = vget(frame.pos, idx);
+    const dLabel = SEG_DISTAL[label];
+    const r_dist = dLabel && si[dLabel] != null ? vget(frame.pos, si[dLabel]) : vadd(r_prox,[0,0,0.1]);
+    return vadd(r_prox, vscale(vsub(r_dist, r_prox), cf));
+  };
+
+  // CoM acceleration via central finite difference of position
+  const comAccel = (label, fi) => {
+    const i0 = Math.max(0, fi - diffH), i2 = Math.min(nf - 1, fi + diffH);
+    const f0 = mvnx.frames[i0], f1 = mvnx.frames[fi], f2 = mvnx.frames[i2];
+    if (!f0?.pos?.length || !f2?.pos?.length) return [0,0,0];
+    const dt = (i2 - i0) / (2 * fps);  // half-span in seconds
+    const r0 = comPos(label, f0), r1 = comPos(label, f1), r2 = comPos(label, f2);
+    // a = (r2 - 2·r1 + r0) / dt², where dt = diffH/fps
+    const dtH = diffH / fps;
+    return vscale(vadd(vsub(r2, vscale(r1, 2)), r0), 1 / (dtH * dtH));
+  };
+
+  // Quasi-dynamic solve: ΣF = m·a, ΣM = I·α + ω×(I·ω)
+  const solve = (label, F_dist, M_dist, r_dist_force, frame, fi) => {
+    const idx = si[label];
+    if (idx == null) return { F:[0,0,0], M:[0,0,0], r_prox:[0,0,0] };
+    const [mf, cf, kf] = WINTER[label] || [0.001, 0.5, 0.3];
+    const m  = mf * bodyMass;
+    const L  = segLen[label] || 0.1;
+    const I  = m * (kf * L) * (kf * L);  // moment of inertia about CoM
+
+    const r_prox     = vget(frame.pos, idx);
+    const dLabel     = SEG_DISTAL[label];
+    const r_dist_geo = dLabel && si[dLabel] != null ? vget(frame.pos, si[dLabel]) : vadd(r_prox,[0,0,0.1]);
+    const r_com      = vadd(r_prox, vscale(vsub(r_dist_geo, r_prox), cf));
+
+    // Inertial terms
+    const a_com = comAccel(label, fi);
+    const omega = frame.angVel?.length > idx*3+2 ? vget(frame.angVel, idx) : [0,0,0];
+    const alpha = frame.angAcc?.length > idx*3+2 ? vget(frame.angAcc, idx) : [0,0,0];
+    const tau_inertial = vadd(vscale(alpha, I), vcross(omega, vscale(omega, I)));
+
+    // Newton: F_prox + F_dist + m·G = m·a_com
+    //       → F_prox = m·a_com − F_dist − m·G
+    const F_prox = vsub(vsub(vscale(a_com, m), F_dist), vscale(G, m));
+
+    // Euler about CoM: M_prox + M_dist + (r_prox−r_com)×F_prox + (r_dist−r_com)×F_dist = τ_inertial
+    //                → M_prox = τ_inertial − M_dist − (r_prox−r_com)×F_prox − (r_dist−r_com)×F_dist
+    const M_prox = vsub(vsub(vsub(tau_inertial, M_dist),
+      vcross(vsub(r_prox,       r_com), F_prox)),
+      vcross(vsub(r_dist_force, r_com), F_dist));
+
+    return { F: F_prox, M: M_prox, r_prox };
+  };
+
+  // Linear interpolation helper
+  const interp = (data, t, tKey, vKey) => {
+    if (!data?.length) return 0;
+    const i = data.findIndex(d => d[tKey] >= t);
+    if (i <= 0) return data[0]?.[vKey] ?? 0;
+    if (i >= data.length) return data[data.length-1]?.[vKey] ?? 0;
+    const d0=data[i-1], d1=data[i], frac=(t-d0[tKey])/(d1[tKey]-d0[tKey]||1);
+    return d0[vKey] + frac*(d1[vKey]-d0[vKey]);
+  };
+  const interpGRF = (t) => ({
+    right: Math.max(0, interp(lsfData, t, 'time', 'right')),
+    left:  Math.max(0, interp(lsfData, t, 'time', 'left')),
+  });
+  const dirs = {'+x':[1,0,0],'-x':[-1,0,0],'+y':[0,1,0],'-y':[0,-1,0],'+z':[0,0,1],'-z':[0,0,-1]};
+  const interpEvForce = (ev, t) => {
+    const localT = t - (ev.tStart || 0);
+    if (!ev.data?.length || localT < 0) return 0;
+    if (localT > ev.data[ev.data.length - 1].time + 0.01) return 0;
+    return Math.max(0, interp(ev.data, localT, 'time', 'force'));
+  };
+
+  const stride = Math.max(1, Math.floor(nf / 200));
+  const results = [];
+
+  mvnx.frames.forEach((frame, fi) => {
+    if (fi % stride !== 0 || !frame.pos?.length) return;
+    const t   = frame.time;
+    const grf = interpGRF(t);
+
+    // ── Legs (bottom-up) ──
+    const leg = (side) => {
+      const UL=`${side}UpperLeg`, LL=`${side}LowerLeg`, FT=`${side}Foot`, TOE=`${side}Toe`;
+      const grfVal = side==='Right' ? grf.right : grf.left;
+      const r_toe  = vget(frame.pos, si[TOE] ?? si[FT]);
+      const foot   = solve(FT,  [0,0,grfVal], [0,0,0],   r_toe,        frame, fi);
+      const shank  = solve(LL,  vneg(foot.F), vneg(foot.M), foot.r_prox, frame, fi);
+      const thigh  = solve(UL,  vneg(shank.F),vneg(shank.M),shank.r_prox,frame, fi);
+      return { foot, shank, thigh };
+    };
+    const R = leg('Right'), L = leg('Left');
+
+    // ── Pelvis (dual hip inputs + inertia) ──
+    const pelvisIdx = si['Pelvis'];
+    const r_pelvis = vget(frame.pos, pelvisIdx);
+    const r_L5S1   = si['L5'] != null ? vget(frame.pos, si['L5']) : vadd(r_pelvis,[0,0,0.1]);
+    const [mfP, cfP, kfP] = WINTER['Pelvis'];
+    const m_p     = mfP * bodyMass;
+    const L_p     = segLen['Pelvis'] || 0.1;
+    const I_p     = m_p * (kfP * L_p) * (kfP * L_p);
+    const r_com_p = vadd(r_pelvis, vscale(vsub(r_L5S1, r_pelvis), cfP));
+    const a_com_p = comAccel('Pelvis', fi);
+    const omega_p = frame.angVel?.length > pelvisIdx*3+2 ? vget(frame.angVel, pelvisIdx) : [0,0,0];
+    const alpha_p = frame.angAcc?.length > pelvisIdx*3+2 ? vget(frame.angAcc, pelvisIdx) : [0,0,0];
+    const tau_p_inertial = vadd(vscale(alpha_p, I_p), vcross(omega_p, vscale(omega_p, I_p)));
+
+    const F_hR    = vneg(R.thigh.F), M_hR = vneg(R.thigh.M);
+    const F_hL    = vneg(L.thigh.F), M_hL = vneg(L.thigh.M);
+    const r_hR    = vget(frame.pos, si['RightUpperLeg']);
+    const r_hL    = vget(frame.pos, si['LeftUpperLeg']);
+
+    // Newton: F_L5S1 + F_hR + F_hL + m_p·G = m_p·a_com_p
+    const F_L5S1 = vsub(vsub(vsub(vscale(a_com_p, m_p), F_hR), F_hL), vscale(G, m_p));
+    // Euler about pelvis CoM:
+    const tau_p = vadd(vadd(vadd(
+      vcross(vsub(r_L5S1, r_com_p), F_L5S1),
+      vcross(vsub(r_hR,   r_com_p), F_hR)),
+      vcross(vsub(r_hL,   r_com_p), F_hL)),
+      vadd(M_hR, M_hL));
+    const M_L5S1 = vsub(tau_p_inertial, tau_p);
+
+    // ── Arms (top-down) — sum forces from ALL events ──
+    const armSolve = (cap) => {
+      const sideLower = cap.toLowerCase();
+      const hand = `${cap}Hand`, fore = `${cap}ForeArm`, upper = `${cap}UpperArm`;
+      if (si[hand] == null) return null;
+      const r_wrist = vget(frame.pos, si[hand]);
+      const r_elbow = vget(frame.pos, si[fore] ?? si[upper]);
+      const handDir = vnorm(vsub(r_wrist, r_elbow));
+      const r_app   = vadd(r_wrist, vscale(handDir, 0.10));
+      let F_app = [0,0,0];
+      for (const ev of (forceEventsList || [])) {
+        const isBilateral = ev.hand === 'bilateral';
+        const applies = (sideLower === 'right' && (ev.hand === 'right' || isBilateral)) ||
+                        (sideLower === 'left'  && (ev.hand === 'left'  || isBilateral));
+        if (!applies || !ev.data?.length) continue;
+        const fMag = interpEvForce(ev, t);
+        if (fMag <= 0) continue;
+        const fDir = dirs[ev.dirKey] || handDir;
+        F_app = vadd(F_app, vscale(fDir, isBilateral ? fMag * 0.5 : fMag));
+      }
+      const h = solve(hand,  F_app,       [0,0,0],    r_app,       frame, fi);
+      const f = solve(fore,  vneg(h.F),   vneg(h.M),  h.r_prox,    frame, fi);
+      const u = solve(upper, vneg(f.F),   vneg(f.M),  f.r_prox,    frame, fi);
+      return u.M;
+    };
+
+    // FE ≈ M_Y (sagittal), LB ≈ M_X (frontal), AR ≈ M_Z (transverse), mag = resultant
+    const fmt = M => ({
+      FE: +M[1].toFixed(1), LB: +M[0].toFixed(1), AR: +M[2].toFixed(1),
+      mag: +Math.sqrt(M[0]*M[0]+M[1]*M[1]+M[2]*M[2]).toFixed(1),
+    });
+
+    results.push({
+      t:        +t.toFixed(3),
+      L5S1:     fmt(M_L5S1),
+      shoulderR: fmt(armSolve('Right') || [0,0,0]),
+      shoulderL: fmt(armSolve('Left')  || [0,0,0]),
+    });
+  });
+  return results;
+}
+
+// ── Force direction → SVG vector lookup (per skeleton view) ──────────────────
+// World axes: XSENS Z-up frame → x=forward, y=left, z=up
+// SVG: x increases right, y increases down
+// Each entry: [dx, dy] unit vector in SVG space for the given world axis direction
+const DIR_SVG = {
+  //          front-view         side-view         top-view
+  //          (proj: y,z)        (proj: x,z)       (proj: x,y → y inverted for SVG)
+  "+x": { front:[ 0,-1], side:[ 1, 0], top:[ 1, 0] }, // forward → up in front, right in side, right in top
+  "-x": { front:[ 0, 1], side:[-1, 0], top:[-1, 0] },
+  "+y": { front:[-1, 0], side:[ 0, 0], top:[ 0,-1] }, // left → left in front, none in side, up in top
+  "-y": { front:[ 1, 0], side:[ 0, 0], top:[ 0, 1] },
+  "+z": { front:[ 0,-1], side:[ 0,-1], top:[ 0, 0] }, // up → up in both front/side, none in top
+  "-z": { front:[ 0, 1], side:[ 0, 1], top:[ 0, 0] },
+};
+
+// ── Force Event: average N trials + optional plateau extension ───────────────
+function computeAveraged(event, forceFiles) {
+  const files = (event.fileIndices || []).map(i => forceFiles[i]).filter(f => f?.data?.length);
+  if (!files.length) return [];
+  const dt = files[0].data.length > 1 ? files[0].data[1].time - files[0].data[0].time : 0.002;
+  const tMax = Math.min(...files.map(f => f.data[f.data.length - 1].time));
+  const interp1 = (data, t) => {
+    const i = data.findIndex(d => d.time >= t);
+    if (i <= 0) return data[0]?.force ?? 0;
+    if (i >= data.length) return data[data.length - 1]?.force ?? 0;
+    const d0 = data[i-1], d1 = data[i];
+    return d0.force + (t - d0.time) / ((d1.time - d0.time) || 1) * (d1.force - d0.force);
+  };
+  const base = [];
+  for (let t = 0; t <= tMax + 1e-9; t = +(t + dt).toFixed(6)) {
+    const vals = files.map(f => interp1(f.data, t));
+    base.push({ time: +t.toFixed(3), force: +(vals.reduce((a,b) => a+b, 0) / vals.length).toFixed(1) });
+  }
+  // Stop at: cut the curve at a specific time
+  const stopAt = event.stopAt ?? null;
+  let result = stopAt != null ? base.filter(d => d.time <= stopAt + 1e-9) : base;
+  // Plateau extension: from plateauT, hold plateauF for plateauDur seconds
+  const { plateauT, plateauF, plateauDur } = event;
+  if (plateauT != null && plateauF != null && (plateauDur || 0) > 0) {
+    const splitIdx = result.findIndex(d => d.time >= plateauT);
+    const pre  = splitIdx >= 0 ? result.slice(0, splitIdx) : result;
+    const nExt = Math.round(plateauDur / dt);
+    const ext  = Array.from({length: nExt}, (_,i) => ({
+      time: +(plateauT + (i+1) * dt).toFixed(3),
+      force: plateauF,
+      plateau: true,
+    }));
+    return [...pre, ...ext];
+  }
+  return result;
+}
+
+// ── Force time normalization (simple + piecewise segment warping) ────────────
+function normalizeForceTime(avgData, event) {
+  if (!avgData?.length) return avgData;
+  const srcDur = avgData[avgData.length - 1].time;
+  if (srcDur <= 0) return avgData;
+  const origDt = avgData.length > 1 ? avgData[1].time - avgData[0].time : 0.002;
+  const lerpF = (data, t) => {
+    const i = data.findIndex(d => d.time >= t);
+    if (i <= 0) return data[0]?.force ?? 0;
+    if (i >= data.length) return data[data.length - 1]?.force ?? 0;
+    const d0 = data[i - 1], d1 = data[i];
+    return d0.force + (t - d0.time) / ((d1.time - d0.time) || 1) * (d1.force - d0.force);
+  };
+
+  // Advanced: piecewise segment normalization
+  if (event.timeSegments?.length) {
+    const result = [];
+    let tgtOffset = 0;
+    for (const seg of event.timeSegments) {
+      const srcLen = (seg.srcEnd - seg.srcStart) || 1;
+      const tgtDur = seg.tgtDur || srcLen;
+      const ratio = srcLen / tgtDur;
+      for (let lt = 0; lt < tgtDur + origDt * 0.5; lt += origDt) {
+        const srcT = seg.srcStart + lt * ratio;
+        result.push({ time: +(tgtOffset + lt).toFixed(4), force: +lerpF(avgData, srcT).toFixed(1) });
+      }
+      tgtOffset += tgtDur;
+    }
+    return result;
+  }
+
+  // Simple: if tEnd is set, linearly warp entire curve to target duration
+  if (event.tEnd != null) {
+    const tgtDur = event.tEnd - (event.tStart || 0);
+    if (tgtDur <= 0 || Math.abs(tgtDur - srcDur) < 0.01) return avgData;
+    const ratio = srcDur / tgtDur;
+    const result = [];
+    for (let t = 0; t <= tgtDur + origDt * 0.5; t += origDt) {
+      result.push({ time: +t.toFixed(4), force: +lerpF(avgData, t * ratio).toFixed(1) });
+    }
+    return result;
+  }
+
+  return avgData;
+}
+
+// ── Skeleton projection (XSENS Z-up) ─────────────────────────────────────────
+function projectPos(flatPos, view, W, H) {
+  const pts = [];
+  for (let i = 0; i+2 < flatPos.length; i += 3) {
+    const [x,y,z] = [flatPos[i], flatPos[i+1], flatPos[i+2]];
+    if (view==="front") pts.push([y,z]);
+    else if (view==="side") pts.push([x,z]);
+    else pts.push([y,x]);
+  }
+  if (!pts.length) return [];
+  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+  const [mnX,mxX]=[Math.min(...xs),Math.max(...xs)];
+  const [mnY,mxY]=[Math.min(...ys),Math.max(...ys)];
+  const pad=30;
+  const sc=Math.min((W-2*pad)/((mxX-mnX)||0.5),(H-2*pad)/((mxY-mnY)||2.0));
+  const ox=W/2-(mnX+mxX)/2*sc, oy=H/2+(mnY+mxY)/2*sc;
+  return pts.map(([px,py])=>[px*sc+ox, oy-py*sc]);
+}
+
+// ── UI Atoms ──────────────────────────────────────────────────────────────────
+const Stat = ({label,value,unit,sub,color}) => (
+  <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 16px"}}>
+    <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{label}</div>
+    <div style={{fontSize:22,fontWeight:700,color:color||C.text}}>
+      {value}<span style={{fontSize:13,color:C.muted,marginLeft:4}}>{unit}</span>
+    </div>
+    {sub&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>{sub}</div>}
+  </div>
+);
+
+const ChartCard = ({title,children,h=280,action}) => (
+  <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:16,marginBottom:12}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+      <div style={{fontSize:12,fontWeight:600,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>{title}</div>
+      {action}
+    </div>
+    <div style={{height:h}}>{children}</div>
+  </div>
+);
+
+const Tt = ({active,payload,label}) => {
+  if (!active||!payload?.length) return null;
+  return (
+    <div style={{background:"#0f172aee",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",fontSize:12}}>
+      <div style={{color:C.muted,marginBottom:4}}>{typeof label==="number"?label.toFixed(2):label}s</div>
+      {payload.map((p,i)=><div key={i} style={{color:p.color}}>{p.name}: <b>{typeof p.value==="number"?p.value.toFixed(2):p.value}</b></div>)}
+    </div>
+  );
+};
+
+const Btn = ({onClick,children,active,danger,small,style:sx={}}) => (
+  <button onClick={onClick} style={{
+    padding:small?"4px 10px":"6px 14px",borderRadius:6,cursor:"pointer",
+    fontSize:small?11:12,fontWeight:active?600:400,
+    border:`1px solid ${danger?C.red:active?C.accent:C.border}`,
+    background:danger?"#dc262618":active?C.accent+"20":"transparent",
+    color:danger?C.red:active?C.accent:C.muted,...sx
+  }}>{children}</button>
+);
+
+const Modal = ({title,onClose,children,width=520}) => (
+  <div style={{position:"fixed",inset:0,background:"#000000bb",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,width:"100%",maxWidth:width,maxHeight:"85vh",overflow:"auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 20px",borderBottom:`1px solid ${C.border}`}}>
+        <div style={{fontSize:16,fontWeight:700,color:C.text}}>{title}</div>
+        <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:22,lineHeight:1}}>×</button>
+      </div>
+      <div style={{padding:20}}>{children}</div>
+    </div>
+  </div>
+);
+
+const EmptyState = ({icon,title,detail,action}) => (
+  <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:48,textAlign:"center",color:C.muted,minHeight:280}}>
+    <div style={{fontSize:38,marginBottom:12}}>{icon}</div>
+    <div style={{fontSize:14,fontWeight:600,color:C.text,marginBottom:8}}>{title}</div>
+    <div style={{fontSize:12,marginBottom:20,maxWidth:360}}>{detail}</div>
+    {action}
+  </div>
+);
+
+const Spinner = ({size=24,color=C.accent}) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" style={{animation:"spin 0.8s linear infinite"}}>
+    <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    <circle cx="12" cy="12" r="10" fill="none" stroke={C.border} strokeWidth="3"/>
+    <path d="M12 2a10 10 0 0 1 10 10" fill="none" stroke={color} strokeWidth="3" strokeLinecap="round"/>
+  </svg>
+);
+
+const FileBar = ({job, onUpload, onRemove}) => {
+  const [open, setOpen] = useState(false);
+  if (!job) return null;
+  const nM = job.mvnxFiles?.length||0, nL = job.loadsolFiles?.length||0, nF = job.forceFiles?.length||0;
+  const Chip = ({color,label,onX,onAdd}) => (
+    <div onClick={onAdd} style={{
+      display:"flex",alignItems:"center",gap:5,fontSize:11,padding:"3px 9px",
+      borderRadius:12,cursor:onAdd?"pointer":"default",
+      background:onAdd?"transparent":color+"18",
+      border:`1px solid ${onAdd?C.border:color+"60"}`,
+      color:onAdd?C.muted:color,whiteSpace:"nowrap"
+    }}>
+      <span>{label}</span>
+      {onX&&<span onClick={e=>{e.stopPropagation();onX();}} style={{cursor:"pointer",opacity:.7,fontSize:15,lineHeight:1,marginLeft:2}}>×</span>}
+    </div>
+  );
+  return (
+    <div style={{marginBottom:14}}>
+      <button onClick={()=>setOpen(v=>!v)} style={{
+        display:"flex",alignItems:"center",gap:8,width:"100%",textAlign:"left",
+        background:C.card,border:`1px solid ${C.border}`,borderRadius:open?"8px 8px 0 0":8,
+        padding:"6px 12px",cursor:"pointer",color:C.muted,fontSize:11}}>
+        <span style={{fontSize:9}}>{open?"▼":"▶"}</span>
+        <span style={{fontWeight:500,color:C.text}}>Files</span>
+        <span style={{opacity:.6}}>{nM} MVNX · {nL} LoadSOL · {nF} WiDACS</span>
+        <span style={{marginLeft:"auto",fontSize:10,color:C.accent}}>{open?"hide":"manage"}</span>
+      </button>
+      {open&&(
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",
+          background:C.card,border:`1px solid ${C.border}`,borderTop:"none",
+          borderRadius:"0 0 8px 8px",padding:"8px 12px"}}>
+          {job.mvnxFiles.map((f,i)=>(
+            <Chip key={i} color={C.teal} label={f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}
+              onX={()=>onRemove("mvnx",i)}/>
+          ))}
+          <Chip color={C.teal} label="+ MVNX" onAdd={()=>onUpload("mvnx")}/>
+          {(job.loadsolFiles||[]).map((f,i)=>(
+            <Chip key={i} color={C.sky} label={f.name} onX={()=>onRemove("loadsol",i)}/>
+          ))}
+          <Chip color={C.sky} label="+ LoadSOL" onAdd={()=>onUpload("loadsol")}/>
+          {(job.forceFiles||[]).map((f,i)=>(
+            <Chip key={i} color={C.violet} label={f.name} onX={()=>onRemove("force",i)}/>
+          ))}
+          <Chip color={C.violet} label="+ Force CSV" onAdd={()=>onUpload("force")}/>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Login / Register Screen ───────────────────────────────────────────────────
+function LoginScreen() {
+  const [mode,     setMode]     = useState("login"); // "login" | "register"
+  const [email,    setEmail]    = useState("");
+  const [password, setPassword] = useState("");
+  const [error,    setError]    = useState("");
+  const [loading,  setLoading]  = useState(false);
+  const [done,     setDone]     = useState(false); // registration email sent
+
+  const inp = (val, set, type="text", placeholder="") => (
+    <input type={type} value={val} onChange={e=>set(e.target.value)} placeholder={placeholder}
+      style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
+        padding:"10px 14px",color:C.text,fontSize:14,boxSizing:"border-box",marginBottom:12,outline:"none"}}/>
+  );
+
+  const submit = async () => {
+    setError(""); setLoading(true);
+    if (mode === "login") {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) setError(error.message);
+    } else {
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) setError(error.message);
+      else setDone(true);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
+      <div style={{width:"100%",maxWidth:400,padding:16}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <div style={{fontSize:10,color:C.accent,textTransform:"uppercase",letterSpacing:3,marginBottom:6}}>OBEL · UWaterloo</div>
+          <div style={{fontSize:24,fontWeight:700,color:C.text,marginBottom:6}}>Biomechanics Dashboard</div>
+          <div style={{fontSize:13,color:C.muted}}>MVNX · LoadSOL · WiDACS · Cycle Analysis</div>
+        </div>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:28}}>
+          {done ? (
+            <div style={{textAlign:"center",color:C.accent}}>
+              <div style={{fontSize:30,marginBottom:12}}>✓</div>
+              <div style={{fontSize:14,fontWeight:600,marginBottom:8}}>Check your email</div>
+              <div style={{fontSize:12,color:C.muted}}>A confirmation link has been sent to {email}. Click it to activate your account, then sign in.</div>
+              <div style={{marginTop:18}}><Btn active onClick={()=>{setMode("login");setDone(false);}}>Back to Sign In</Btn></div>
+            </div>
+          ) : (
+            <>
+              <div style={{display:"flex",gap:4,marginBottom:22,background:C.bg,borderRadius:8,padding:3}}>
+                {["login","register"].map(m=>(
+                  <button key={m} onClick={()=>{setMode(m);setError("");}}
+                    style={{flex:1,padding:"7px",borderRadius:6,border:"none",cursor:"pointer",
+                      background:mode===m?C.card:"transparent",color:mode===m?C.accent:C.muted,
+                      fontSize:12,fontWeight:mode===m?600:400}}>
+                    {m==="login"?"Sign In":"Register"}
+                  </button>
+                ))}
+              </div>
+              {inp(email,setEmail,"email","Email address")}
+              {inp(password,setPassword,"password","Password")}
+              {error&&<div style={{fontSize:12,color:C.red,marginBottom:12,padding:"8px 12px",background:C.red+"15",borderRadius:6}}>{error}</div>}
+              <button onClick={submit} disabled={loading||!email||!password}
+                style={{width:"100%",padding:"11px",borderRadius:8,border:"none",cursor:loading?"wait":"pointer",
+                  background:C.accent,color:C.bg,fontSize:14,fontWeight:700,opacity:(loading||!email||!password)?0.6:1}}>
+                {loading ? "..." : mode==="login" ? "Sign In" : "Create Account"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Error boundary — catches render crashes and shows the error instead of black screen ──
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  componentDidCatch(e, info) { console.error('Render error:', e, info); }
+  render() {
+    if (this.state.error) return (
+      <div style={{background:C.card,border:`1px solid ${C.red}`,borderRadius:10,padding:20,margin:16,color:C.text}}>
+        <div style={{fontWeight:700,color:C.red,marginBottom:8}}>Render error (check console)</div>
+        <pre style={{fontSize:11,color:C.muted,whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{this.state.error?.message}</pre>
+        <button onClick={()=>this.setState({error:null})} style={{marginTop:10,padding:"4px 12px",borderRadius:6,background:C.accent,color:"#000",border:"none",cursor:"pointer",fontSize:12}}>Dismiss</button>
+      </div>
+    );
+    return this.props.children;
+  }
+}
+
+// ── Auth Wrapper ──────────────────────────────────────────────────────────────
+export default function App() {
+  const [session,     setSession]     = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (authLoading) return (
+    <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <Spinner size={36}/>
+    </div>
+  );
+  if (!session) return <LoginScreen/>;
+  return <ErrorBoundary><Dashboard session={session}/></ErrorBoundary>;
+}
+
+
+// ── Main Dashboard ────────────────────────────────────────────────────────────
+function Dashboard({ session }) {
+  const [jobs,        setJobs]        = useState([]);
+  const [activeJobId, setActiveJobId] = useState(() => localStorage.getItem('bmech_activeJob') || null);
+  const [tab,         setTab]         = useState(0);
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [filesLoading,setFilesLoading]= useState(false);
+  const [loadingMsg,   setLoadingMsg]  = useState("");
+
+  const [saveError,       setSaveError]       = useState(null);
+
+  // Modals
+  const [showJobModal,    setShowJobModal]    = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [newJobName,      setNewJobName]      = useState("");
+  const [uploadType,      setUploadType]      = useState("mvnx");
+
+  // Job rename
+  const [editingJobId,   setEditingJobId]   = useState(null);
+  const [editingJobName, setEditingJobName] = useState("");
+
+  // Skeleton
+  const [skelFrame,      setSkelFrame]      = useState(0);
+  const [skelView,       setSkelView]       = useState("front");
+  const [skelFileIdx,    setSkelFileIdx]    = useState(0);
+  const [skelPlaying,    setSkelPlaying]    = useState(false);
+  const [skelSpeed,      setSkelSpeed]      = useState(1);
+  const [skelLoadsolIdx, setSkelLoadsolIdx] = useState(0);
+  const [loadsolPairings,setLoadsolPairings]= useState({});
+  const [jointPanels, setJointPanels] = useState([{jointKey:0, planes:4}]); // bit2=FE default
+
+  // Cycles
+  const [cycleJointKey, setCycleJointKey] = useState(0);
+
+  // Dynamics
+  const [bodyMass,       setBodyMass]       = useState(75);
+
+  // Force files — per-file settings keyed by storagePath
+  const [forceFileSets,  setForceFileSets]  = useState({});  // {[sp]: {offset, dirKey}}
+  const [activeForceIdx, setActiveForceIdx] = useState(0);
+
+  // Force events — grouped measurements per task type
+  const [forceEvents,    setForceEvents]    = useState({}); // keyed by MVNX storagePath
+  // [{id,label,type,hand,tStart,fileIndices[],plateauT,plateauF,plateauDur}]
+  const [activeEventId,  setActiveEventId]  = useState(null);
+  const [showForcePanel, setShowForcePanel] = useState(false);
+  // Plateau: double-click a point → modal to enter duration
+  const [plateauModal,   setPlateauModal]   = useState(null); // {t, f, durStr}
+  const fpChartRef                          = useRef(null);
+
+  // Forces / settings
+  const [forceBlocks,    setForceBlocks]    = useState([]); // kept for DB compat, UI removed
+  const [showTriggerCh,    setShowTriggerCh]    = useState(false);
+  const [showMomComponents,setShowMomComponents] = useState(false);
+
+  const fileInputRef       = useRef();
+  const loadedJobsRef      = useRef(new Set());
+  const readyToSaveRef     = useRef(false);
+
+  const activeJob = jobs.find(j => j.id === activeJobId);
+
+  // Legacy per-file force reference (kept for DB compat; force events are the primary path now)
+  const activeForce      = activeJob?.forceFiles?.[activeForceIdx] ?? null; // eslint-disable-line
+
+  // ── Load all jobs on mount ────────────────────────────────────────────────
+  useEffect(() => {
+    const load = async () => {
+      setJobsLoading(true);
+      const { data } = await supabase
+        .from("jobs")
+        .select("*, job_files(*)")
+        .order("created_at", { ascending: false });
+      if (data) {
+        setJobs(data.map(j => ({
+          ...j,
+          createdAt: new Date(j.created_at).toLocaleDateString(),
+          mvnxFiles: [],
+          loadsolFiles: [],
+          forceFiles: [],
+          _fileRecords: j.job_files || [],
+        })));
+      }
+      setJobsLoading(false);
+    };
+    load();
+  }, []);
+
+  // ── Lazy-load files when a job is selected ────────────────────────────────
+  useEffect(() => {
+    if (!activeJobId) return;
+    if (loadedJobsRef.current.has(activeJobId)) {
+      // Already loaded — restore settings
+      loadSettings(activeJobId);
+      return;
+    }
+    const job = jobs.find(j => j.id === activeJobId);
+    if (!job) return;
+
+    loadedJobsRef.current.add(activeJobId);
+
+    const records = job._fileRecords || [];
+    if (!records.length) {
+      loadSettings(activeJobId);
+      return;
+    }
+
+    const doLoad = async () => {
+      setFilesLoading(true);
+      readyToSaveRef.current = false;
+
+      const dl = async (name, path) => {
+        setLoadingMsg(`Downloading ${name}…`);
+        const { data, error } = await supabase.storage.from(BUCKET).download(path);
+        if (error || !data) return null;
+        setLoadingMsg(`Parsing ${name}…`);
+        return await blobToText(data);
+      };
+
+      const mvnxRecs  = records.filter(r => r.file_type === "mvnx").sort((a,b) => a.sort_order - b.sort_order);
+      const lsRecs    = records.filter(r => r.file_type === "loadsol").sort((a,b) => a.sort_order - b.sort_order);
+      const forceRecs = records.filter(r => r.file_type === "force").sort((a,b) => a.sort_order - b.sort_order);
+
+      const total = mvnxRecs.length + lsRecs.length + forceRecs.length;
+      let done = 0;
+
+      const mvnxFiles = [];
+      for (const rec of mvnxRecs) {
+        const text = await dl(`${rec.file_name} (${++done}/${total})`, rec.storage_path);
+        if (!text) continue;
+        const p = parseMVNX(text);
+        if (p.ok) mvnxFiles.push({ id: rec.id, storagePath: rec.storage_path, name: rec.file_name, ...p });
+      }
+
+      const loadsolFiles = [];
+      for (const lsRec of lsRecs) {
+        const text = await dl(`${lsRec.file_name} (${++done}/${total})`, lsRec.storage_path);
+        if (text) {
+          const p = parseLoadSOL(text);
+          if (p.ok) loadsolFiles.push({ id: lsRec.id, storagePath: lsRec.storage_path, name: lsRec.file_name, ...p });
+        }
+      }
+
+      const forceFiles = [];
+      for (const fRec of forceRecs) {
+        const text = await dl(`${fRec.file_name} (${++done}/${total})`, fRec.storage_path);
+        if (text) {
+          const p = parseForceFile(text);
+          if (p.ok) forceFiles.push({ id: fRec.id, storagePath: fRec.storage_path, name: fRec.file_name, ...p });
+        }
+      }
+
+      setJobs(prev => prev.map(j => j.id === activeJobId ? { ...j, mvnxFiles, loadsolFiles, forceFiles } : j));
+      setFilesLoading(false);
+      setLoadingMsg("");
+      await loadSettings(activeJobId);
+    };
+
+    doLoad();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobId, jobs.length]);
+
+  // ── Load settings for active job ──────────────────────────────────────────
+  const loadSettings = async (jobId) => {
+    readyToSaveRef.current = false;
+    setForceBlocks([]);
+    setJointPanels([{jointKey:0, planes:4}]);
+    setSkelFrame(0); setSkelFileIdx(0); setSkelPlaying(false);
+    setSkelLoadsolIdx(0); setLoadsolPairings({});
+    setBodyMass(75); setForceFileSets({}); setActiveForceIdx(0);
+    setForceEvents({}); setActiveEventId(null); setShowForcePanel(false);
+
+    const { data } = await supabase
+      .from("job_settings")
+      .select("*")
+      .eq("job_id", jobId)
+      .maybeSingle();
+
+    if (data) {
+      // force_blocks stores legacy array OR wrapped object {blocks, events, fileSets}
+      const fb = data.force_blocks;
+      if (Array.isArray(fb)) {
+        setForceBlocks(fb);
+      } else if (fb && typeof fb === 'object') {
+        setForceBlocks(fb.blocks || []);
+        if (fb.events && !Array.isArray(fb.events)) {
+          setForceEvents(fb.events); // { [mvnxPath]: [...] }
+        } else if (Array.isArray(fb.events) && fb.events.length) {
+          setForceEvents({ '__default__': fb.events }); // legacy migration
+          setActiveEventId(fb.events[0]?.id || null);
+        }
+        if (fb.fileSets) setForceFileSets(fb.fileSets);
+      }
+      if (data.joint_panels?.length) {
+        setJointPanels(data.joint_panels.map(p => ({
+          ...p,
+          planes: typeof p.planes === 'number' ? p.planes : (p.planes || [0]).reduce((m,x) => m|(1<<x), 0),
+        })));
+      }
+      if (data.loadsol_pairings) setLoadsolPairings(data.loadsol_pairings);
+      if (data.body_mass > 0)    setBodyMass(data.body_mass);
+    }
+    // Short delay so the save effect doesn't fire immediately after loading
+    setTimeout(() => { readyToSaveRef.current = true; }, 600);
+  };
+
+  // ── Auto-save settings when they change ──────────────────────────────────
+  useEffect(() => {
+    if (!activeJobId || !readyToSaveRef.current) return;
+    const timer = setTimeout(async () => {
+      const payload = {
+        force_blocks: { blocks: forceBlocks, events: forceEvents, fileSets: forceFileSets },
+        joint_panels: jointPanels,
+        loadsol_pairings: loadsolPairings,
+        body_mass: bodyMass,
+        updated_at: new Date().toISOString(),
+      };
+      // Try update first; if no row exists yet, insert
+      const { data: updated, error: updateErr } = await supabase
+        .from("job_settings").update(payload).eq("job_id", activeJobId).select("job_id");
+      if (updateErr) {
+        console.error("[biomechanics] settings save failed:", updateErr.message);
+        setSaveError(updateErr.message); return;
+      }
+      if (!updated?.length) {
+        const { error: insertErr } = await supabase
+          .from("job_settings").insert({ job_id: activeJobId, ...payload });
+        if (insertErr) {
+          console.error("[biomechanics] settings insert failed:", insertErr.message);
+          setSaveError(insertErr.message); return;
+        }
+      }
+      setSaveError(null);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [activeJobId, forceBlocks, jointPanels, loadsolPairings, bodyMass, forceFileSets, forceEvents]); // eslint-disable-line
+
+  // ── Remember active job across refreshes ─────────────────────────────────
+  useEffect(() => {
+    if (activeJobId) localStorage.setItem('bmech_activeJob', activeJobId);
+    else localStorage.removeItem('bmech_activeJob');
+  }, [activeJobId]);
+
+  // ── Job helpers ───────────────────────────────────────────────────────────
+  const createJob = async () => {
+    if (!newJobName.trim()) return;
+    const { data, error } = await supabase
+      .from("jobs")
+      .insert({ name: newJobName.trim() })
+      .select()
+      .single();
+    if (error) { alert("Create job error: " + error.message); return; }
+    if (data) {
+      const job = { ...data, createdAt: new Date(data.created_at).toLocaleDateString(), mvnxFiles: [], loadsolFiles: [], forceFiles: [], _fileRecords: [] };
+      setJobs(prev => [job, ...prev]);
+      setActiveJobId(data.id);
+      loadedJobsRef.current.add(data.id);
+      readyToSaveRef.current = true;
+    }
+    setNewJobName(""); setShowJobModal(false);
+  };
+
+  const renameJob = async (jobId, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    await supabase.from("jobs").update({ name: trimmed }).eq("id", jobId);
+    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, name: trimmed } : j));
+  };
+
+  const deleteJob = async (jobId) => {
+    // Storage files cascade-deleted via DB → storage cleanup handled separately
+    await supabase.from("jobs").delete().eq("id", jobId);
+    setJobs(prev => prev.filter(j => j.id !== jobId));
+    loadedJobsRef.current.delete(jobId);
+    if (activeJobId === jobId) setActiveJobId(null);
+  };
+
+  const openUpload = (type) => { setUploadType(type); setShowUploadModal(true); };
+
+  // ── File upload ───────────────────────────────────────────────────────────
+  const handleFileUpload = useCallback(async (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length || !activeJobId) return;
+    e.target.value = "";
+    setShowUploadModal(false);
+
+    for (const file of files) {
+      const text = await blobToText(file);
+      const storagePath = `${activeJobId}/${uploadType}/${Date.now()}_${file.name}`;
+
+      // Parse first — bail if invalid
+      let parsed;
+      if (uploadType === "mvnx")    parsed = parseMVNX(text);
+      else if (uploadType === "loadsol") parsed = parseLoadSOL(text);
+      else                               parsed = parseForceFile(text);
+      if (!parsed.ok) { alert(`Parse error in ${file.name}: ${parsed.error}`); continue; }
+
+      // Upload raw file to storage
+      const { error: upErr } = await supabase.storage.from(BUCKET).upload(storagePath, file);
+      if (upErr) { alert(`Upload error: ${upErr.message}`); continue; }
+
+      // Store metadata in DB
+      const sortOrder = uploadType === "mvnx"    ? (activeJob?.mvnxFiles?.length    || 0)
+                      : uploadType === "loadsol" ? (activeJob?.loadsolFiles?.length  || 0)
+                      : uploadType === "force"   ? (activeJob?.forceFiles?.length    || 0) : 0;
+      const { data: rec, error: dbErr } = await supabase.from("job_files").insert({
+        job_id: activeJobId,
+        file_type: uploadType,
+        file_name: file.name,
+        storage_path: storagePath,
+        sort_order: sortOrder,
+        metadata: uploadType === "mvnx"
+          ? { frameRate: parsed.frameRate, duration: parsed.duration }
+          : uploadType === "loadsol"
+          ? { blipTime: parsed.blipTime, stats: parsed.stats }
+          : { stats: parsed.stats },
+      }).select().single();
+      if (dbErr) continue;
+
+      // Update local state
+      setJobs(prev => prev.map(j => {
+        if (j.id !== activeJobId) return j;
+        const f = { id: rec.id, storagePath, name: file.name, ...parsed };
+        if (uploadType === "mvnx")    return { ...j, mvnxFiles: [...j.mvnxFiles, f], _fileRecords: [...j._fileRecords, rec] };
+        if (uploadType === "loadsol") return { ...j, loadsolFiles: [...(j.loadsolFiles||[]), f], _fileRecords: [...j._fileRecords, rec] };
+        if (uploadType === "force")   return { ...j, forceFiles: [...(j.forceFiles||[]), f], _fileRecords: [...j._fileRecords, rec] };
+        return j;
+      }));
+    }
+  }, [activeJobId, uploadType, activeJob]);
+
+  // ── File remove ───────────────────────────────────────────────────────────
+  const removeFile = useCallback(async (type, idx) => {
+    const job = jobs.find(j => j.id === activeJobId);
+    if (!job) return;
+    let fileObj;
+    if (type === "mvnx")    fileObj = job.mvnxFiles[idx];
+    if (type === "loadsol") fileObj = job.loadsolFiles[idx];
+    if (type === "force")   fileObj = job.forceFiles[idx];
+    if (!fileObj) return;
+
+    if (fileObj.storagePath) await supabase.storage.from(BUCKET).remove([fileObj.storagePath]);
+    if (fileObj.id) await supabase.from("job_files").delete().eq("id", fileObj.id);
+
+    setJobs(prev => prev.map(j => {
+      if (j.id !== activeJobId) return j;
+      if (type === "mvnx")    return { ...j, mvnxFiles: j.mvnxFiles.filter((_,i) => i !== idx) };
+      if (type === "loadsol") return { ...j, loadsolFiles: j.loadsolFiles.filter((_,i) => i !== idx) };
+      if (type === "force")   return { ...j, forceFiles: j.forceFiles.filter((_,i) => i !== idx) };
+      return j;
+    }));
+    if (type === "force") {
+      setActiveForceIdx(prev => Math.max(0, Math.min(prev, job.forceFiles.length - 2)));
+      setForceEvents(prev => {
+        const updated = {};
+        for (const [key, evs] of Object.entries(prev)) {
+          updated[key] = evs.map(ev => ({
+            ...ev,
+            fileIndices: (ev.fileIndices || [])
+              .filter(i => i !== idx)
+              .map(i => i > idx ? i - 1 : i),
+          }));
+        }
+        return updated;
+      });
+    }
+  }, [activeJobId, jobs]);
+
+  // ── Skeleton animation ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!skelPlaying) return;
+    const mvnx = activeJob?.mvnxFiles?.[skelFileIdx];
+    if (!mvnx?.frames?.length) return;
+    const id = setInterval(() => {
+      setSkelFrame(f => { const n=f+1; if(n>=mvnx.frames.length){setSkelPlaying(false);return 0;} return n; });
+    }, 1000/((mvnx.frameRate||60)*skelSpeed));
+    return () => clearInterval(id);
+  }, [skelPlaying, activeJob, skelFileIdx, skelSpeed]);
+
+  // Memoised joint panel data — only recomputes when panels or MVNX file changes,
+  // NOT on every skelFrame tick. This prevents Recharts from reinitialising every frame.
+  const activeSkelMvnx = activeJob?.mvnxFiles?.[skelFileIdx];
+
+  // Component-level force event accessors for the active MVNX file (used by both Skeleton and Forces tabs)
+  const mvnxKey = activeSkelMvnx?.storagePath || '__default__';
+  const curEvs  = forceEvents[mvnxKey] || [];
+  const setCurEvs = updater => setForceEvents(prev => ({
+    ...prev,
+    [mvnxKey]: typeof updater === 'function' ? updater(prev[mvnxKey] || []) : updater,
+  }));
+  const activeEvent   = curEvs.find(e => e.id === activeEventId) || null;
+  const forceFilesList = activeJob?.forceFiles || [];
+  const panelData = useMemo(() => {
+    const mvnx = activeSkelMvnx;
+    if (!mvnx?.frames?.length) return jointPanels.map(() => []);
+    return jointPanels.map(panel => {
+      const def = KEY_JOINTS[panel.jointKey];
+      const ji  = mvnx.jointLabels?.findIndex(l => def.r.test(l));
+      if (ji == null || ji < 0) return [];
+      const stride = Math.max(1, Math.floor(mvnx.frames.length / 200));
+      return mvnx.frames.filter((_,i) => i % stride === 0).map(f => ({
+        t: +f.time.toFixed(2),
+        ...(panel.planes & 1 ? {LB: +(f.ja?.[ji*3]   ?? 0).toFixed(2)} : {}),  // Z = Lat Bend
+        ...(panel.planes & 2 ? {AR: +(f.ja?.[ji*3+1] ?? 0).toFixed(2)} : {}),  // X = Axial Rot
+        ...(panel.planes & 4 ? {FE: +(f.ja?.[ji*3+2] ?? 0).toFixed(2)} : {}),  // Y = Flex/Ext
+      }));
+    });
+  }, [jointPanels, activeSkelMvnx]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Active LoadSOL — null if no pairing set (or explicitly "none")
+  // Auto-pair only when there is exactly one LoadSOL file and no explicit entry
+  const _lsAll = activeJob?.loadsolFiles || [];
+  const lsfIdx = (skelFileIdx in loadsolPairings)
+    ? loadsolPairings[skelFileIdx]
+    : (_lsAll.length === 1 ? 0 : null);
+  const activeLsf = (lsfIdx != null) ? (_lsAll[lsfIdx] ?? null) : null;
+
+  // Clipped LoadSOL data aligned to XSENS t=0
+  const clippedLsf = useMemo(() => {
+    if (!activeLsf?.data?.length) return null;
+    if (activeLsf.blipTime == null) return activeLsf.data;
+    return activeLsf.data
+      .filter(d => d.time >= activeLsf.blipTime)
+      .map(d => ({...d, time: +(d.time - activeLsf.blipTime).toFixed(3)}));
+  }, [activeLsf]);
+
+  // Pre-compute averaged data for all force events (keyed by event id)
+  // so animation frames never call computeAveraged directly
+  const allEvAveraged = useMemo(() => {
+    try {
+      const forceFilesList = activeJob?.forceFiles || [];
+      const result = {};
+      for (const evs of Object.values(forceEvents)) {
+        for (const ev of evs) {
+          result[ev.id] = computeAveraged(ev, forceFilesList);
+        }
+      }
+      return result;
+    } catch(e) { console.error('allEvAveraged crash:', e); return {}; }
+  }, [forceEvents, activeJob?.forceFiles]); // eslint-disable-line
+
+  const averagedEvData = activeEvent ? (allEvAveraged[activeEvent.id] || []) : [];
+
+  // Pre-compute normalized force data for all events (time-warped per tEnd / segments)
+  const allEvNormalized = useMemo(() => {
+    try {
+      const result = {};
+      for (const evs of Object.values(forceEvents)) {
+        for (const ev of evs) {
+          result[ev.id] = normalizeForceTime(allEvAveraged[ev.id] || [], ev);
+        }
+      }
+      return result;
+    } catch(e) { console.error('allEvNormalized crash:', e); return {}; }
+  }, [forceEvents, allEvAveraged]);
+
+  // Build force events list for dynamics from ALL events for current MVNX
+  const dynForceEvents = useMemo(() => {
+    try {
+      return (curEvs || [])
+        .filter(ev => (ev.fileIndices || []).length > 0)
+        .map(ev => ({
+          data: allEvNormalized[ev.id] || [],
+          tStart: ev.tStart || 0,
+          dirKey: ev.direction || 'auto',
+          hand: ev.hand || 'right',
+        }))
+        .filter(ev => ev.data.length > 0);
+    } catch(e) { console.error('dynForceEvents crash:', e); return []; }
+  }, [curEvs, allEvNormalized]);
+
+  // Inverse dynamics — recomputes only when inputs change, NOT per frame
+  // Now uses ALL force events simultaneously, not just the active one
+  const invDynData = useMemo(() => {
+    try {
+      return computeInvDyn(activeSkelMvnx, bodyMass, clippedLsf, dynForceEvents);
+    } catch(e) { console.error('invDynData crash:', e); return []; }
+  }, [activeSkelMvnx, bodyMass, clippedLsf, dynForceEvents]);
+
+  // ── Forces right column chart data (memoized — expensive computation) ──
+  const forcesChartData = useMemo(() => {
+    try {
+      const chartFor = (dataKey) => {
+        const d = invDynData?.map(r => {
+          const v = r[dataKey];
+          if (!v) return null;
+          return { t: r.t, mag: v.mag, FE: v.FE, LB: v.LB, AR: v.AR };
+        }).filter(Boolean) || [];
+        const peakMag = d.length ? Math.max(...d.map(r => r.mag||0)) : 0;
+        return { data: d, peakMag };
+      };
+      return { L5S1: chartFor("L5S1"), shoulderR: chartFor("shoulderR"), shoulderL: chartFor("shoulderL") };
+    } catch(e) { console.error('forcesChartData crash:', e); return { L5S1:{data:[],peakMag:0}, shoulderR:{data:[],peakMag:0}, shoulderL:{data:[],peakMag:0} }; }
+  }, [invDynData]);
+
+  // ── Forces right column (renders charts with playback cursor) ──
+  const renderForcesRightCol = () => {
+    const mvnxFiles = activeJob?.mvnxFiles || [];
+    const hasMvnx   = !!activeSkelMvnx?.frames?.length;
+    const hasData   = invDynData?.length > 0;
+    const hasLS     = !!clippedLsf?.length;
+    // Compute time ranges for ALL force events (not just active)
+    const allEvRanges = curEvs.filter(ev => (ev.fileIndices||[]).length > 0).map(ev => {
+      const normData = allEvNormalized[ev.id] || allEvAveraged[ev.id] || [];
+      const dur = normData.length ? normData[normData.length-1].time : 0;
+      return { id: ev.id, label: ev.label, hand: ev.hand, tStart: ev.tStart||0, tEnd: (ev.tStart||0)+dur, color: ev.id===activeEventId ? C.accent : C.violet };
+    });
+    // Detect time overlaps between events that share the same hand
+    const overlapRegions = [];
+    for (let i = 0; i < allEvRanges.length; i++) {
+      for (let j = i + 1; j < allEvRanges.length; j++) {
+        const a = allEvRanges[i], b = allEvRanges[j];
+        // Check hand conflict: same hand, or either is bilateral
+        const handConflict = a.hand === b.hand || a.hand === 'bilateral' || b.hand === 'bilateral'
+          || (a.hand === 'right' && b.hand === 'right') || (a.hand === 'left' && b.hand === 'left');
+        if (!handConflict) continue;
+        const oStart = Math.max(a.tStart, b.tStart), oEnd = Math.min(a.tEnd, b.tEnd);
+        if (oEnd > oStart + 0.01) {
+          overlapRegions.push({ x1: oStart, x2: oEnd, evA: a.label, evB: b.label });
+        }
+      }
+    }
+    const curTime   = activeSkelMvnx?.frames?.[Math.min(skelFrame, (activeSkelMvnx?.frames?.length||1)-1)]?.time ?? null;
+
+    const jChart = (title, dataKey, color=C.accent) => {
+      const { data: d, peakMag } = forcesChartData[dataKey] || { data: [], peakMag: 0 };
+      if (!d.length) return null;
+      return (
+        <ChartCard key={dataKey} title={<span>{title}<span style={{fontSize:10,color:C.muted,marginLeft:6}}>peak {peakMag.toFixed(0)} Nm</span></span>} h={190}>
+          <ResponsiveContainer>
+            <LineChart data={d}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+              <XAxis dataKey="t" type="number" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+              <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="Nm"/>
+              <Tooltip content={Tt}/>
+              <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
+              {curTime!=null && <ReferenceLine x={curTime} stroke={C.accent} strokeWidth={1.5} strokeDasharray="4 2"/>}
+              {allEvRanges.map(ev => (
+                <ReferenceArea key={ev.id} x1={ev.tStart} x2={ev.tEnd} fill={ev.color} fillOpacity={ev.id===activeEventId?0.12:0.06}/>
+              ))}
+              {overlapRegions.map((ol,i) => (
+                <ReferenceArea key={`ol-${i}`} x1={ol.x1} x2={ol.x2} fill={C.red} fillOpacity={0.18} strokeWidth={0}/>
+              ))}
+              {showMomComponents ? (
+                <>
+                  <Line type="monotone" dataKey="FE" stroke={C.teal}  dot={false} strokeWidth={1.5} name="FE (flex/ext)" isAnimationActive={false}/>
+                  <Line type="monotone" dataKey="LB" stroke={C.amber} dot={false} strokeWidth={1.5} name="LB (lat bend)" isAnimationActive={false}/>
+                  <Line type="monotone" dataKey="AR" stroke={C.rose}  dot={false} strokeWidth={1.5} name="AR (axial rot)" isAnimationActive={false}/>
+                  <Legend wrapperStyle={{fontSize:9}}/>
+                </>
+              ) : (
+                <Line type="monotone" dataKey="mag" stroke={color} dot={false} strokeWidth={2} name="Resultant" isAnimationActive={false}/>
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      );
+    };
+
+    return (
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {/* Config bar */}
+        <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",
+          background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px"}}>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <span style={{fontSize:12,color:C.muted}}>Body mass:</span>
+            <input type="number" step="any" min={20} max={250} value={bodyMass}
+              onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>0)setBodyMass(v);}}
+              style={{width:58,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.accent,fontSize:12}}/>
+            <span style={{fontSize:12,color:C.muted}}>kg</span>
+          </div>
+          {mvnxFiles.length > 1 && (
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:12,color:C.muted}}>MVNX:</span>
+              <select value={skelFileIdx} onChange={e=>setSkelFileIdx(+e.target.value)}
+                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11}}>
+                {mvnxFiles.map((f,i)=><option key={i} value={i}>{f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}</option>)}
+              </select>
+            </div>
+          )}
+          <div style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>
+            {hasMvnx?"✓ MVNX":"✗ MVNX"} · {hasLS?"✓ LoadSOL":"✗ LoadSOL"}
+            {activeLsf?.blipTime!=null && <span style={{color:C.amber,marginLeft:6}}>⚡ blip {activeLsf.blipTime.toFixed(2)}s</span>}
+          </div>
+        </div>
+
+        {/* Charts / empty states */}
+        {!hasMvnx ? (
+          <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data to compute shoulder moments."/>
+        ) : !hasData ? (
+          <EmptyState icon="📐" title="No dynamics data" detail="Assign force events to hands to compute shoulder moments."/>
+        ) : (
+          <>
+            <div style={{display:"flex",alignItems:"center",gap:12,
+              borderBottom:`1px solid ${C.accent}40`,paddingBottom:6}}>
+              <span style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>
+                Joint Moments — Quasi-Static
+              </span>
+              <button onClick={()=>setShowMomComponents(v=>!v)} style={{
+                marginLeft:"auto",background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+                padding:"3px 10px",color:showMomComponents?C.accent:C.muted,fontSize:11,cursor:"pointer"}}>
+                {showMomComponents ? "Show resultant" : "Show FE / LB / AR"}
+              </button>
+            </div>
+            {overlapRegions.length > 0 && (
+              <div style={{background:C.red+"15",border:`1px solid ${C.red}40`,borderRadius:8,
+                padding:"8px 12px",fontSize:11,color:C.red,display:"flex",gap:8,alignItems:"flex-start"}}>
+                <span style={{fontSize:14,lineHeight:1,flexShrink:0}}>⚠</span>
+                <div>
+                  <div style={{fontWeight:600,marginBottom:2}}>Force event time overlap detected</div>
+                  <div style={{color:C.red+"cc"}}>
+                    Forces are being summed in overlapping regions (red bands on charts). This may double-count loads on the same hand.
+                  </div>
+                  <div style={{marginTop:4,fontSize:10,color:C.red+"aa"}}>
+                    {overlapRegions.map((ol,i) => (
+                      <div key={i}>"{ol.evA}" & "{ol.evB}" overlap {ol.x1.toFixed(2)}–{ol.x2.toFixed(2)}s</div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            {!hasLS && (
+              <div style={{background:C.amber+"15",border:`1px solid ${C.amber}40`,borderRadius:8,
+                padding:"8px 12px",fontSize:11,color:C.amber}}>
+                No LoadSOL paired — L5/S1 bottom-up will be zero. Pair in Skeleton tab.
+              </div>
+            )}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+              {jChart("L5/S1 — Bottom-Up (via LoadSOL)", "L5S1", C.sky)}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+              {jChart("Right Shoulder", "shoulderR", C.amber)}
+              {jChart("Left Shoulder",  "shoulderL", C.emerald)}
+            </div>
+            {/* Peak table */}
+            <div style={{overflowX:"auto",background:C.card,border:`1px solid ${C.border}`,borderRadius:8}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                <thead>
+                  <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                    {["Joint","Peak (Nm)",...(showMomComponents?["Peak FE","Peak LB","Peak AR"]:[])].map(h=>(
+                      <th key={h} style={{textAlign:"left",padding:"7px 12px",color:C.muted,fontWeight:600}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    {label:"L5/S1 (bottom-up)", key:"L5S1",     clr:C.sky},
+                    {label:"R Shoulder",         key:"shoulderR", clr:C.amber},
+                    {label:"L Shoulder",         key:"shoulderL", clr:C.emerald},
+                  ].map(({label,key,clr}) => {
+                    const d = invDynData.map(r => r[key]).filter(Boolean);
+                    if (!d.length) return null;
+                    const pk = c => Math.max(...d.map(r => Math.abs(r[c]||0))).toFixed(1);
+                    return (
+                      <tr key={key} style={{borderBottom:`1px solid ${C.border}20`}}>
+                        <td style={{padding:"6px 12px",color:clr,fontWeight:500}}>{label}</td>
+                        <td style={{padding:"6px 12px",color:C.accent,fontWeight:600}}>{pk("mag")}</td>
+                        {showMomComponents&&<td style={{padding:"6px 12px",color:C.teal}}>{pk("FE")}</td>}
+                        {showMomComponents&&<td style={{padding:"6px 12px",color:C.amber}}>{pk("LB")}</td>}
+                        {showMomComponents&&<td style={{padding:"6px 12px",color:C.rose}}>{pk("AR")}</td>}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  // ── Shared constants ─────────────────────────────────────────────────────────
+  const TYPE_OPTS = ['push','lift','pinch','pull','carry'];
+  const HAND_OPTS = [{v:'right',l:'Right'},{v:'left',l:'Left'},{v:'bilateral',l:'Both'}];
+  const DIR_OPTS  = [
+    {v:'auto',l:'Auto (hand axis)'},{v:'+x',l:'Forward (+X)'},{v:'-x',l:'Backward (−X)'},
+    {v:'+y',l:'Left (+Y)'},{v:'-y',l:'Right (−Y)'},{v:'+z',l:'Up (+Z)'},{v:'-z',l:'Down (−Z)'},
+  ];
+
+  // ── Skeleton viewer core (SVG + playback controls) — used by Skeleton & Forces tabs ──
+  const renderSkeletonCore = ({showForcePanelToggle=true}={}) => {
+    const mvnx   = activeSkelMvnx;
+    const hasData = !!mvnx?.frames?.length;
+    const frame  = hasData ? mvnx.frames[Math.min(skelFrame, mvnx.frames.length-1)] : null;
+    const positions = frame?.pos?.length ? frame.pos : REF_POS;
+    const boneList  = mvnx?.bones?.length ? mvnx.bones : BONES;
+    const W=300, H=420;
+    const pts = projectPos(positions, skelView, W, H);
+    const ft  = frame?.time || 0;
+
+    return (
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14}}>
+        <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:10}}>
+          {["front","side","top"].map(v=>(
+            <Btn key={v} active={skelView===v} small onClick={()=>setSkelView(v)}>{v[0].toUpperCase()+v.slice(1)}</Btn>
+          ))}
+        </div>
+        <svg width={W} height={H} style={{display:"block",margin:"0 auto"}}>
+          <rect width={W} height={H} fill={C.bg} rx={8}/>
+          {[0.25,0.5,0.75].map(p=>(
+            <line key={p} x1={0} y1={H*p} x2={W} y2={H*p} stroke={C.border} strokeWidth={0.5} strokeDasharray="4 4"/>
+          ))}
+          {pts.length>0&&boneList.map(([a,b],i)=>{
+            const pa=pts[a],pb=pts[b]; if(!pa||!pb) return null;
+            const la=mvnx?.segLabels?.[a]||"",lb=mvnx?.segLabels?.[b]||"";
+            const isR=/right/i.test(la)||/right/i.test(lb);
+            const isL=/left/i.test(la)||/left/i.test(lb);
+            return <line key={i} x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]}
+              stroke={isR?C.sky:isL?C.rose:C.amber} strokeWidth={isR||isL?3:4} strokeLinecap="round"/>;
+          })}
+          {pts.map((pt,i)=>{
+            if(!pt) return null;
+            const lbl=mvnx?.segLabels?.[i]||"";
+            return <circle key={i} cx={pt[0]} cy={pt[1]} r={/head/i.test(lbl)?7:4}
+              fill={/head/i.test(lbl)?C.amber:C.accent} opacity={0.9}/>;
+          })}
+          {/* Force arrows (scaled down, no text labels) */}
+          {(()=>{
+            if(!curEvs.length) return null;
+            const arrows=[], segLabels=mvnx?.segLabels||[], handForces={right:0,left:0};
+            const rHi=segLabels.findIndex(l=>/right.*hand|hand.*right/i.test(l));
+            const lHi=segLabels.findIndex(l=>/left.*hand|hand.*left/i.test(l));
+            curEvs.forEach(ev=>{
+              if(!ev.fileIndices?.length) return;
+              const avgData=allEvNormalized[ev.id]||allEvAveraged[ev.id]||[];
+              if(!avgData.length) return;
+              const localT=ft-(ev.tStart||0);
+              if(localT<0||localT>avgData[avgData.length-1].time+0.5) return;
+              let forceMag=0;
+              if(localT<=avgData[0].time) forceMag=avgData[0].force;
+              else if(localT>=avgData[avgData.length-1].time) forceMag=avgData[avgData.length-1].force;
+              else { for(let k=0;k<avgData.length-1;k++){if(localT>=avgData[k].time&&localT<=avgData[k+1].time){const frac=(localT-avgData[k].time)/(avgData[k+1].time-avgData[k].time);forceMag=avgData[k].force+frac*(avgData[k+1].force-avgData[k].force);break;}}}
+              if(forceMag<1) return;
+              // Accumulate for readout
+              if(ev.hand==='right'||ev.hand==='bilateral') handForces.right+=ev.hand==='bilateral'?forceMag*0.5:forceMag;
+              if(ev.hand==='left'||ev.hand==='bilateral') handForces.left+=ev.hand==='bilateral'?forceMag*0.5:forceMag;
+              const peakForce=Math.max(...avgData.map(d=>d.force),1);
+              const arrowLen=Math.max(8,(forceMag/peakForce)*40);
+              const dirKey=ev.direction||'auto';
+              let svgDir=null;
+              if(dirKey!=='auto'&&DIR_SVG[dirKey]){const vec=DIR_SVG[dirKey][skelView]||[0,-1];const m=Math.sqrt(vec[0]**2+vec[1]**2)||1;svgDir=[vec[0]/m,vec[1]/m];}
+              const hands=ev.hand==='bilateral'?[rHi,lHi]:ev.hand==='left'?[lHi]:[rHi];
+              hands.forEach((hIdx,hi)=>{
+                if(hIdx<0||!pts[hIdx]) return;
+                const[hx,hy]=pts[hIdx];
+                let dx=0,dy=-1;
+                if(!svgDir){const isRight=ev.hand==='right'||(ev.hand==='bilateral'&&hi===0);const fIdx=segLabels.findIndex(l=>isRight?/right.*(forearm|lowerarm|wrist)/i.test(l):/left.*(forearm|lowerarm|wrist)/i.test(l));if(fIdx>=0&&pts[fIdx]){const[fx,fy]=pts[fIdx];const rm=Math.sqrt((hx-fx)**2+(hy-fy)**2)||1;dx=(hx-fx)/rm;dy=(hy-fy)/rm;}}else[dx,dy]=svgDir;
+                const tipX=hx+dx*arrowLen,tipY=hy+dy*arrowLen;
+                const hl=5,ang=Math.atan2(dy,dx);
+                const color=ev.hand==='left'||(ev.hand==='bilateral'&&hi===1)?"#4ade80":"#fbbf24";
+                arrows.push(<g key={`arr-${ev.id}-${hi}`}>
+                  <line x1={hx} y1={hy} x2={tipX} y2={tipY} stroke={color} strokeWidth={1.8} strokeLinecap="round"/>
+                  <line x1={tipX} y1={tipY} x2={tipX-hl*Math.cos(ang-0.5)} y2={tipY-hl*Math.sin(ang-0.5)} stroke={color} strokeWidth={1.8} strokeLinecap="round"/>
+                  <line x1={tipX} y1={tipY} x2={tipX-hl*Math.cos(ang+0.5)} y2={tipY-hl*Math.sin(ang+0.5)} stroke={color} strokeWidth={1.8} strokeLinecap="round"/>
+                </g>);
+              });
+            });
+            // Force readout in bottom-right corner
+            const hasAny=handForces.right>0||handForces.left>0;
+            if(hasAny){
+              arrows.push(
+                <g key="force-readout">
+                  <rect x={W-95} y={H-42} width={88} height={36} rx={5} fill={C.bg} fillOpacity={0.85} stroke={C.border} strokeWidth={0.5}/>
+                  {handForces.right>0&&<text x={W-90} y={H-24} fill="#fbbf24" fontSize={12} fontWeight="700" fontFamily="monospace">{`R ${handForces.right.toFixed(0)} N`}</text>}
+                  {handForces.left>0&&<text x={W-90} y={H-11} fill="#4ade80" fontSize={12} fontWeight="700" fontFamily="monospace">{`L ${handForces.left.toFixed(0)} N`}</text>}
+                  {handForces.right>0&&!handForces.left&&<text x={W-90} y={H-11} fill={C.muted} fontSize={9} fontFamily="monospace">L  —</text>}
+                  {handForces.left>0&&!handForces.right&&<>{
+                    /* shift right down, put right placeholder on top */
+                  }<text x={W-90} y={H-24} fill={C.muted} fontSize={9} fontFamily="monospace">R  —</text></>}
+                </g>
+              );
+            }
+            return arrows;
+          })()}
+          {!hasData&&<text x={W/2} y={H-16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose — upload MVNX</text>}
+        </svg>
+        {hasData ? (
+          <div style={{marginTop:10}}>
+            <div style={{display:"flex",gap:5,justifyContent:"center",marginBottom:6,flexWrap:"wrap"}}>
+              <Btn small onClick={()=>{setSkelFrame(0);setSkelPlaying(false);}}>⏮</Btn>
+              <Btn small active={skelPlaying} onClick={()=>setSkelPlaying(p=>!p)}>{skelPlaying?"⏸":"▶"}</Btn>
+              <Btn small onClick={()=>{setSkelPlaying(false);setSkelFrame(mvnx.frames.length-1);}}>⏭</Btn>
+              {[0.25,0.5,1,2,4].map(s=>(
+                <Btn key={s} small active={skelSpeed===s} onClick={()=>setSkelSpeed(s)}>{s}×</Btn>
+              ))}
+            </div>
+            <input type="range" min={0} max={mvnx.frames.length-1} value={skelFrame}
+              onChange={e=>setSkelFrame(+e.target.value)} style={{width:"100%",accentColor:C.accent}}/>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted,marginTop:3}}>
+              <span>t={ft.toFixed(2)}s</span>
+              <span>{skelFrame+1}/{mvnx.frames.length}</span>
+              <span>{mvnx.duration?.toFixed(1)}s@{mvnx.frameRate}Hz</span>
+            </div>
+          </div>
+        ) : (
+          <div style={{textAlign:"center",marginTop:14}}>
+            <Btn active onClick={()=>openUpload("mvnx")}>Upload MVNX</Btn>
+          </div>
+        )}
+        {showForcePanelToggle&&(
+          <div style={{marginTop:12,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
+            <Btn active={showForcePanel} onClick={()=>setShowForcePanel(p=>!p)}
+              style={{width:"100%",justifyContent:"center",textAlign:"center"}}>
+              {showForcePanel?"✕ Close Force Panel":"⚡ Force Events"}
+            </Btn>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Force event panel — used by Skeleton & Forces tabs ────────────────────
+  const renderForcePanel = () => {
+    const updateEvent = (patch) => setCurEvs(prev =>
+      prev.map(e => e.id === activeEventId ? {...e, ...patch} : e));
+    const skelTime = activeSkelMvnx?.frames?.[Math.min(skelFrame, (activeSkelMvnx?.frames?.length||1)-1)]?.time ?? 0;
+    const validTrials=(activeEvent?.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
+    const normEvData = activeEvent ? (allEvNormalized[activeEvent.id] || averagedEvData) : averagedEvData;
+    const isNormalized = activeEvent?.tEnd != null || (activeEvent?.timeSegments?.length > 0);
+    const stride=Math.max(1,Math.floor(averagedEvData.length/400));
+    const displayData=averagedEvData.filter((_,i)=>i%stride===0);
+    const normStride=Math.max(1,Math.floor(normEvData.length/400));
+    const displayNorm=normEvData.filter((_,i)=>i%normStride===0);
+
+    // Detect overlap between events on same hand
+    const panelEvRanges = curEvs.filter(ev => (ev.fileIndices||[]).length > 0).map(ev => {
+      const nd = allEvNormalized[ev.id] || allEvAveraged[ev.id] || [];
+      const dur = nd.length ? nd[nd.length-1].time : 0;
+      return { id: ev.id, hand: ev.hand, tStart: ev.tStart||0, tEnd: (ev.tStart||0)+dur };
+    });
+    const overlappingIds = new Set();
+    for (let i = 0; i < panelEvRanges.length; i++) {
+      for (let j = i + 1; j < panelEvRanges.length; j++) {
+        const a = panelEvRanges[i], b = panelEvRanges[j];
+        const handConflict = a.hand === b.hand || a.hand === 'bilateral' || b.hand === 'bilateral';
+        if (!handConflict) continue;
+        const oStart = Math.max(a.tStart, b.tStart), oEnd = Math.min(a.tEnd, b.tEnd);
+        if (oEnd > oStart + 0.01) { overlappingIds.add(a.id); overlappingIds.add(b.id); }
+      }
+    }
+
+    return (
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:14,
+        display:"flex",flexDirection:"column",gap:10,overflow:"auto",maxHeight:"calc(100vh - 200px)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:.5}}>Force Events</div>
+          <Btn small active onClick={()=>{
+            const id=`ev_${Date.now()}`;
+            const newEv={id,label:`Event ${curEvs.length+1}`,type:'push',hand:'right',
+              direction:'auto',tStart:0,tEnd:null,fileIndices:[],stopAt:null,plateauT:null,plateauF:null,plateauDur:0,timeSegments:[]};
+            setCurEvs(prev=>[...prev,newEv]);
+            setActiveEventId(id);
+          }}>+ New</Btn>
+        </div>
+        {curEvs.length===0&&(
+          <div style={{fontSize:11,color:C.muted,padding:"10px 0",textAlign:"center"}}>No events yet — click + New to create one.</div>
+        )}
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {curEvs.map(ev=>{
+            const nTrials=(ev.fileIndices||[]).filter(i=>i<forceFilesList.length).length;
+            const isActive=ev.id===activeEventId;
+            const hasOverlap=overlappingIds.has(ev.id);
+            const avgData=allEvAveraged[ev.id]||[];
+            const peakF=avgData.length?Math.max(...avgData.map(d=>d.force)):0;
+            const borderColor=hasOverlap?C.red:isActive?C.accent:C.border;
+            return (
+              <div key={ev.id} onClick={()=>setActiveEventId(ev.id)} style={{
+                display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,cursor:"pointer",
+                background:hasOverlap?C.red+"10":isActive?C.accent+"18":"transparent",
+                border:`1px solid ${borderColor}`}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:5}}>
+                    <span style={{fontSize:12,fontWeight:isActive?600:400,color:isActive?C.accent:C.text,
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ev.label}</span>
+                    {hasOverlap&&<span style={{fontSize:9,color:C.red,background:C.red+"20",padding:"1px 5px",borderRadius:3,fontWeight:600,flexShrink:0}}>OVERLAP</span>}
+                  </div>
+                  <div style={{fontSize:10,color:C.muted}}>
+                    {ev.type} · {ev.hand} · {nTrials} trial{nTrials!==1?'s':''}
+                    {peakF>0&&<span style={{color:C.violet,marginLeft:4}}>· {peakF.toFixed(0)} N peak</span>}
+                  </div>
+                </div>
+                <Btn small onClick={e=>{e.stopPropagation();
+                  const id=`ev_${Date.now()}`;
+                  setCurEvs(prev=>[...prev,{...ev,id,label:ev.label+' (copy)'}]);
+                  setActiveEventId(id);
+                }} style={{fontSize:10}}>⧉</Btn>
+                <Btn small danger onClick={e=>{e.stopPropagation();
+                  setCurEvs(prev=>prev.filter(x=>x.id!==ev.id));
+                  if(activeEventId===ev.id) setActiveEventId(null);
+                }}>×</Btn>
+              </div>
+            );
+          })}
+        </div>
+        {activeEvent&&(
+          <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,display:"flex",flexDirection:"column",gap:8}}>
+            <input value={activeEvent.label} onChange={e=>updateEvent({label:e.target.value})}
+              style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 10px",
+                color:C.text,fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {TYPE_OPTS.map(t=>(
+                <Btn key={t} small active={activeEvent.type===t} onClick={()=>updateEvent({type:t})}>{t}</Btn>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted,minWidth:36}}>Hand:</span>
+              {HAND_OPTS.map(({v,l})=>(
+                <Btn key={v} small active={activeEvent.hand===v} onClick={()=>updateEvent({hand:v})}>{l}</Btn>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted,minWidth:36}}>Dir:</span>
+              <select value={activeEvent.direction||'auto'} onChange={e=>updateEvent({direction:e.target.value})}
+                style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 6px",color:C.text,fontSize:11,flex:1}}>
+                {DIR_OPTS.map(({v,l})=><option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted,minWidth:36}}>Start:</span>
+              <input type="number" step="0.01" value={activeEvent.tStart??0}
+                onChange={e=>updateEvent({tStart:parseFloat(e.target.value)||0})}
+                style={{width:70,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
+                  padding:"3px 8px",color:C.accent,fontSize:11}}/>
+              <span style={{fontSize:11,color:C.muted}}>s</span>
+              <Btn small onClick={()=>updateEvent({tStart:+skelTime.toFixed(3)})}
+                style={{fontSize:10,padding:"2px 6px"}} title="Set start to current skeleton time">
+                ⏱ Set
+              </Btn>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted,minWidth:36}}>End:</span>
+              <input type="number" step="0.01" value={activeEvent.tEnd??''}
+                placeholder={averagedEvData.length ? ((activeEvent.tStart||0) + averagedEvData[averagedEvData.length-1].time).toFixed(2) : 'auto'}
+                onChange={e=>{const v=e.target.value;updateEvent({tEnd:v===''?null:parseFloat(v)||0});}}
+                style={{width:70,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
+                  padding:"3px 8px",color:activeEvent.tEnd!=null?C.amber:C.muted,fontSize:11}}/>
+              <span style={{fontSize:11,color:C.muted}}>s</span>
+              <Btn small onClick={()=>updateEvent({tEnd:+skelTime.toFixed(3)})}
+                style={{fontSize:10,padding:"2px 6px"}} title="Set end to current skeleton time">
+                ⏱ Set
+              </Btn>
+              {activeEvent.tEnd!=null&&<Btn small danger onClick={()=>updateEvent({tEnd:null,timeSegments:[]})}>✕</Btn>}
+            </div>
+            {activeEvent.tEnd!=null&&(()=>{
+              const srcDur=averagedEvData.length?averagedEvData[averagedEvData.length-1].time:0;
+              const tgtDur=activeEvent.tEnd-(activeEvent.tStart||0);
+              const ratio=srcDur>0?(tgtDur/srcDur).toFixed(2):'—';
+              const faster=tgtDur<srcDur, slower=tgtDur>srcDur;
+              return (
+                <div style={{fontSize:10,color:C.amber,background:C.amber+"12",padding:"6px 10px",borderRadius:5,border:`1px solid ${C.amber}30`}}>
+                  <div style={{fontWeight:600,marginBottom:2}}>Time Normalization Active</div>
+                  <div>Recorded: {srcDur.toFixed(2)}s {faster?"compressed":"stretched"} to {tgtDur.toFixed(2)}s ({ratio}×)</div>
+                  {faster&&<div style={{marginTop:2,opacity:.8}}>Force curve plays {(1/parseFloat(ratio)||1).toFixed(1)}× faster on MVNX timeline</div>}
+                  {slower&&<div style={{marginTop:2,opacity:.8}}>Force curve plays {(1/parseFloat(ratio)||1).toFixed(1)}× slower on MVNX timeline</div>}
+                </div>
+              );
+            })()}
+            {/* Advanced: piecewise time segment normalization */}
+            {activeEvent.tEnd!=null&&(
+              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <span style={{fontSize:10,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:.5}}>Advanced: Segment Warping</span>
+                  <Btn small onClick={()=>{
+                    const srcDur=averagedEvData.length?averagedEvData[averagedEvData.length-1].time:1;
+                    const segs=activeEvent.timeSegments||[];
+                    const lastEnd=segs.length?segs[segs.length-1].srcEnd:0;
+                    updateEvent({timeSegments:[...segs,{srcStart:+lastEnd.toFixed(2),srcEnd:+srcDur.toFixed(2),tgtDur:+(srcDur-lastEnd).toFixed(2)}]});
+                  }} style={{fontSize:9}}>+ Segment</Btn>
+                </div>
+                {(activeEvent.timeSegments||[]).length===0&&(
+                  <div style={{fontSize:10,color:C.muted,fontStyle:"italic",marginBottom:4}}>
+                    No segments — whole curve normalized uniformly. Add segments to warp parts independently.
+                  </div>
+                )}
+                {(activeEvent.timeSegments||[]).map((seg,si_)=>(
+                  <div key={si_} style={{display:"flex",gap:4,alignItems:"center",marginBottom:4,fontSize:10}}>
+                    <span style={{color:C.muted}}>#{si_+1}</span>
+                    <input type="number" step="0.1" value={seg.srcStart} onChange={e=>{
+                      const segs=[...(activeEvent.timeSegments||[])];segs[si_]={...segs[si_],srcStart:parseFloat(e.target.value)||0};updateEvent({timeSegments:segs});
+                    }} style={{width:48,background:C.bg,border:`1px solid ${C.border}`,borderRadius:3,padding:"2px 4px",color:C.text,fontSize:10}} title="Source start (s)"/>
+                    <span style={{color:C.muted}}>→</span>
+                    <input type="number" step="0.1" value={seg.srcEnd} onChange={e=>{
+                      const segs=[...(activeEvent.timeSegments||[])];segs[si_]={...segs[si_],srcEnd:parseFloat(e.target.value)||0};updateEvent({timeSegments:segs});
+                    }} style={{width:48,background:C.bg,border:`1px solid ${C.border}`,borderRadius:3,padding:"2px 4px",color:C.text,fontSize:10}} title="Source end (s)"/>
+                    <span style={{color:C.muted}}>⇒</span>
+                    <input type="number" step="0.1" value={seg.tgtDur} onChange={e=>{
+                      const segs=[...(activeEvent.timeSegments||[])];segs[si_]={...segs[si_],tgtDur:parseFloat(e.target.value)||0.1};updateEvent({timeSegments:segs});
+                    }} style={{width:48,background:C.bg,border:`1px solid ${C.amber}60`,borderRadius:3,padding:"2px 4px",color:C.amber,fontSize:10}} title="Target duration (s)"/>
+                    <span style={{color:C.muted}}>s</span>
+                    <span onClick={()=>{const segs=(activeEvent.timeSegments||[]).filter((_,j)=>j!==si_);updateEvent({timeSegments:segs});}}
+                      style={{color:C.red,cursor:"pointer",fontSize:12,lineHeight:1}}>✕</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{fontSize:11,color:C.muted,marginBottom:2}}>Trials (WiDACS files):</div>
+            <div style={{display:"flex",flexDirection:"column",gap:3}}>
+              {forceFilesList.map((f,fi)=>{
+                const sel=(activeEvent.fileIndices||[]).includes(fi);
+                return (
+                  <div key={fi} onClick={()=>updateEvent({fileIndices:sel?(activeEvent.fileIndices||[]).filter(x=>x!==fi):[...(activeEvent.fileIndices||[]),fi]})}
+                    style={{display:"flex",alignItems:"center",gap:7,padding:"4px 8px",borderRadius:5,cursor:"pointer",
+                      background:sel?C.violet+"20":"transparent",border:`1px solid ${sel?C.violet:C.border}`}}>
+                    <span style={{fontSize:10,color:sel?C.violet:C.muted}}>{sel?"✓":"○"}</span>
+                    <span style={{fontSize:11,color:sel?C.text:C.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</span>
+                  </div>
+                );
+              })}
+              {forceFilesList.length===0&&<div style={{fontSize:11,color:C.muted,fontStyle:"italic"}}>No WiDACS files uploaded yet.</div>}
+            </div>
+            {validTrials>0&&(
+              <>
+                {isNormalized && (
+                  <div style={{fontSize:10,fontWeight:600,color:C.amber,textTransform:"uppercase",letterSpacing:.5,marginBottom:2}}>
+                    Normalized Force Preview
+                  </div>
+                )}
+                <div ref={fpChartRef} style={{height:isNormalized?150:120}}>
+                  <ResponsiveContainer>
+                    {isNormalized ? (
+                      <LineChart margin={{left:0,right:8,top:4,bottom:0}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                        <XAxis type="number" dataKey="time" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                        <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
+                        <Tooltip content={Tt}/>
+                        <Line data={displayData} type="monotone" dataKey="force" stroke={C.muted} dot={false} strokeWidth={1} strokeDasharray="4 3" name="Original" opacity={0.5} isAnimationActive={false}/>
+                        <Line data={displayNorm} type="monotone" dataKey="force" stroke={C.amber} dot={false} strokeWidth={2.5} name="Normalized" isAnimationActive={false}/>
+                        <Legend wrapperStyle={{fontSize:9}}/>
+                      </LineChart>
+                    ) : (
+                      <LineChart data={displayData} margin={{left:0,right:8,top:4,bottom:0}}
+                        onClick={e=>{if(e?.activeLabel!=null) setPlateauModal({t:e.activeLabel,f:e.activePayload?.[0]?.value??0,durStr:activeEvent.plateauDur>0?String(activeEvent.plateauDur):'1'});}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                        <XAxis dataKey="time" type="number" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                        <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N" width={44}/>
+                        <Tooltip content={Tt}/>
+                        {activeEvent.stopAt!=null && <ReferenceLine x={activeEvent.stopAt} stroke={C.red} strokeWidth={1.5} strokeDasharray="4 2"/>}
+                        {activeEvent.plateauT!=null && <ReferenceLine x={activeEvent.plateauT} stroke={C.amber} strokeWidth={1.5} strokeDasharray="4 2"/>}
+                        <Line type="monotone" dataKey="force" stroke={C.violet} dot={false} strokeWidth={2} name="Avg force" isAnimationActive={false}/>
+                      </LineChart>
+                    )}
+                  </ResponsiveContainer>
+                </div>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10}}>
+                  <Btn small onClick={()=>{
+                    if(!averagedEvData.length) return;
+                    const peakD=averagedEvData.reduce((a,b)=>b.force>a.force?b:a,averagedEvData[0]);
+                    setPlateauModal({t:peakD.time,f:peakD.force,durStr:activeEvent.plateauDur>0?String(activeEvent.plateauDur):'1'});
+                  }}>Extend at peak</Btn>
+                  {activeEvent.stopAt!=null
+                    ? <Btn small danger onClick={()=>updateEvent({stopAt:null})}>Clear stop</Btn>
+                    : <Btn small onClick={()=>{if(averagedEvData.length){const last=averagedEvData[averagedEvData.length-1];updateEvent({stopAt:+(last.time*0.8).toFixed(3)});}}}>Set stop</Btn>}
+                  {(activeEvent.plateauT!=null||activeEvent.stopAt!=null)&&(
+                    <Btn small danger onClick={()=>updateEvent({plateauT:null,plateauF:null,plateauDur:0,stopAt:null})}>Reset all</Btn>
+                  )}
+                </div>
+                {activeEvent.stopAt!=null&&(
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <span style={{fontSize:11,color:C.muted,minWidth:36}}>Stop:</span>
+                    <input type="number" step="0.01" value={activeEvent.stopAt}
+                      onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>=0)updateEvent({stopAt:+v.toFixed(3)});}}
+                      style={{width:70,background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"3px 8px",color:C.red,fontSize:11}}/>
+                    <span style={{fontSize:11,color:C.muted}}>s</span>
+                  </div>
+                )}
+                {validTrials>1&&(()=>{
+                  const traces=(activeEvent.fileIndices||[]).filter(fi=>fi<forceFilesList.length)
+                    .map((fi,i)=>{const f=forceFilesList[fi];if(!f?.data)return null;const s=Math.max(1,Math.floor(f.data.length/200));return{data:f.data.filter((_,j)=>j%s===0),color:CYCLE_COLORS[i%CYCLE_COLORS.length]};}).filter(Boolean);
+                  return (<div style={{height:60,marginTop:4}}><ResponsiveContainer>
+                    <LineChart margin={{left:0,right:8,top:2,bottom:0}}>
+                      <XAxis type="number" dataKey="time" domain={["auto","auto"]} tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="s"/>
+                      <YAxis tick={{fill:C.muted,fontSize:8}} stroke={C.border} unit="N" width={44}/>
+                      {traces.map((tr,i)=><Line key={i} data={tr.data} type="monotone" dataKey="force" stroke={tr.color} dot={false} strokeWidth={1} opacity={0.5} name={`T${i+1}`}/>)}
+                    </LineChart>
+                  </ResponsiveContainer></div>);
+                })()}
+              </>
+            )}
+          </div>
+        )}
+        {plateauModal&&activeEvent&&(
+          <div style={{position:"fixed",inset:0,background:"#00000080",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}}
+            onClick={()=>setPlateauModal(null)}>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:24,width:320}} onClick={e=>e.stopPropagation()}>
+              <div style={{fontSize:14,fontWeight:700,color:C.text,marginBottom:4}}>Extend Plateau</div>
+              <div style={{fontSize:12,color:C.muted,marginBottom:14}}>
+                At <b style={{color:C.accent}}>{plateauModal.t.toFixed(3)}s</b>, force = <b style={{color:C.violet}}>{plateauModal.f.toFixed(1)} N</b>
+              </div>
+              <input type="number" step="0.1" min={0} autoFocus value={plateauModal.durStr}
+                onChange={e=>setPlateauModal(m=>({...m,durStr:e.target.value}))}
+                onKeyDown={e=>{if(e.key==='Enter'){const v=parseFloat(plateauModal.durStr);if(!isNaN(v)&&v>0){setCurEvs(prev=>prev.map(ev=>ev.id===activeEventId?{...ev,plateauT:plateauModal.t,plateauF:plateauModal.f,plateauDur:v}:ev));setPlateauModal(null);}}if(e.key==='Escape')setPlateauModal(null);}}
+                style={{width:"100%",background:C.bg,border:`1px solid ${C.accent}`,borderRadius:6,padding:"8px 12px",color:C.text,fontSize:14,boxSizing:"border-box",outline:"none",marginBottom:16}}/>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                <Btn small onClick={()=>setPlateauModal(null)}>Cancel</Btn>
+                <Btn small active onClick={()=>{const v=parseFloat(plateauModal.durStr);if(!isNaN(v)&&v>0){setCurEvs(prev=>prev.map(ev=>ev.id===activeEventId?{...ev,plateauT:plateauModal.t,plateauF:plateauModal.f,plateauDur:v}:ev));setPlateauModal(null);}}}>Apply</Btn>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  TAB 0 — SKELETON (merged with overview)
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderSkeleton = () => {
+    const mvnxFiles = activeJob?.mvnxFiles || [];
+    const mvnx  = mvnxFiles[skelFileIdx];
+    const hasData = !!mvnx?.frames?.length;
+    const frame = hasData ? mvnx.frames[Math.min(skelFrame, mvnx.frames.length-1)] : null;
+    const ft = frame?.time || 0;
+
+    const loadsolFilesList = activeJob?.loadsolFiles || [];
+    const lsfIdx = (skelFileIdx in loadsolPairings)
+      ? loadsolPairings[skelFileIdx]
+      : (loadsolFilesList.length === 1 ? 0 : null);
+    const lsf = (lsfIdx != null) ? (loadsolFilesList[lsfIdx] ?? null) : null;
+    const hasLS = !!lsf?.data?.length;
+
+    const blipTime = lsf?.blipTime;
+
+    if (filesLoading) return (
+      <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:300,gap:14}}>
+        <Spinner size={32}/><div style={{fontSize:13,color:C.muted}}>{loadingMsg||"Loading files…"}</div>
+      </div>
+    );
+
+
+    // ── Main render ───────────────────────────────────────────────────────
+    return (
+      <div>
+        {/* File bar */}
+        {activeJob && <FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
+
+        {/* Compact stats row */}
+        {activeJob && (
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:8,marginBottom:12}}>
+            <Stat label="Cycles"      value={mvnxFiles.length||"—"}                                     unit="files"/>
+            <Stat label="Duration"    value={mvnx?.duration?.toFixed(1)||"—"}                            unit="s"/>
+            <Stat label="GRF Peak R"  value={lsf?.stats?.rightMax?.toFixed(0)||"—"}                     unit="N"/>
+            <Stat label="GRF Peak L"  value={lsf?.stats?.leftMax?.toFixed(0)||"—"}                      unit="N"/>
+            <Stat label="Blip"        value={blipTime?.toFixed(3)||"—"}                                  unit="s" color={blipTime?C.amber:undefined}/>
+            <Stat label="Force Events" value={curEvs?.length||"—"}                                     unit=""/>
+          </div>
+        )}
+
+        {/* Cycle / LoadSOL selectors */}
+        {(mvnxFiles.length > 0 || loadsolFilesList.length > 0) && (
+          <div style={{marginBottom:10,background:C.bg,borderRadius:7,border:`1px solid ${C.border}`,overflow:"hidden"}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 16px 1fr",alignItems:"center",
+              padding:"5px 10px",borderBottom:`1px solid ${C.border}`,fontSize:10,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:.5}}>
+              <span>MVNX Cycle</span><span/>
+              <span>LoadSOL</span>
+            </div>
+            {mvnxFiles.map((f,i) => {
+              const pairedIdx = loadsolPairings[i] ?? (loadsolFilesList.length === 1 ? 0 : null);
+              const isActive = skelFileIdx === i;
+              return (
+                <div key={i} onClick={()=>{
+                  setSkelFileIdx(i); setSkelFrame(0); setSkelPlaying(false);
+                  if (pairedIdx != null) setSkelLoadsolIdx(pairedIdx);
+                }} style={{
+                  display:"grid",gridTemplateColumns:"1fr 16px 1fr",alignItems:"center",
+                  padding:"6px 10px",cursor:"pointer",
+                  background: isActive ? C.accent+"18" : "transparent",
+                  borderBottom: i < mvnxFiles.length-1 ? `1px solid ${C.border}` : "none",
+                }}>
+                  <span style={{fontSize:12,color:isActive?C.accent:C.text,fontWeight:isActive?600:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                    {f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,"")}
+                  </span>
+                  <span style={{textAlign:"center",color:C.muted,fontSize:11}}>→</span>
+                  {loadsolFilesList.length > 0 ? (
+                    <select value={pairedIdx ?? ""} onClick={e=>e.stopPropagation()}
+                      onChange={e=>{
+                        const v = e.target.value === "" ? null : +e.target.value;
+                        setLoadsolPairings(prev=>({...prev,[i]:v}));
+                        if (isActive && v != null) setSkelLoadsolIdx(v);
+                      }}
+                      style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:4,
+                        padding:"2px 4px",color:pairedIdx!=null?C.text:C.muted,fontSize:11,width:"100%"}}>
+                      <option value="">— none —</option>
+                      {loadsolFilesList.map((ls,li)=>(
+                        <option key={li} value={li}>{ls.name.replace(/\.txt$/i,"")}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span style={{fontSize:11,color:C.muted,fontStyle:"italic"}}>no LoadSOL</span>
+                  )}
+                </div>
+              );
+            })}
+            {mvnxFiles.length === 0 && loadsolFilesList.length > 0 && (
+              <div style={{padding:"8px 10px",fontSize:12,color:C.muted,fontStyle:"italic"}}>Upload MVNX to pair cycles</div>
+            )}
+          </div>
+        )}
+
+        {/* Two-column layout: skeleton | right panel */}
+        {!activeJobId ? (
+          <EmptyState icon="🗂" title="No job selected" detail="Create or select a job to get started."
+            action={<Btn active onClick={()=>setShowJobModal(true)}>Create Job</Btn>}/>
+        ) : (
+          <div style={{display:"grid",gridTemplateColumns:showForcePanel?"300px 1fr":"300px 1fr",gap:14,alignItems:"start"}}>
+
+            {renderSkeletonCore()}
+
+            {/* ── Right column: force panel OR joint panels ── */}
+            {showForcePanel ? renderForcePanel() : (
+              <div>
+                {jointPanels.map((panel,pi) => {
+                  const kj   = KEY_JOINTS[panel.jointKey];
+                  const data = panelData[pi] || [];
+                  const ji = hasData ? mvnx.jointLabels?.findIndex(l => kj.r.test(l)) : -1;
+                  const curAngles = (ji >= 0 && frame?.ja) ? {
+                    LB: frame.ja[ji*3]?.toFixed(1),
+                    AR: frame.ja[ji*3+1]?.toFixed(1),
+                    FE: frame.ja[ji*3+2]?.toFixed(1),
+                  } : null;
+                  return (
+                    <ChartCard key={pi} h={180} title={
+                      <span>{kj.lbl}{curAngles&&panel.planes>0&&(
+                        <span style={{fontSize:10,fontWeight:400,color:C.muted,marginLeft:8}}>
+                          {[0,1,2].filter(pli=>panel.planes&(1<<pli)).map(pli=>`${PLANE_LABELS[pli]}: ${curAngles[PLANE_LABELS[pli]]}°`).join("  ")}
+                        </span>
+                      )}</span>
+                    } action={
+                      <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                        {PLANE_LABELS.map((pl,pli) => (
+                          <Btn key={pl} small active={!!(panel.planes & (1<<pli))}
+                            onClick={()=>setJointPanels(prev=>prev.map((p,i)=>
+                              i!==pi ? p : {...p, planes: p.planes ^ (1<<pli)}))}>
+                            {pl}
+                          </Btn>
+                        ))}
+                        <select value={panel.jointKey}
+                          onChange={e=>setJointPanels(prev=>prev.map((p,i)=>i===pi?{...p,jointKey:+e.target.value}:p))}
+                          style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 4px",color:C.muted,fontSize:10,marginLeft:4}}>
+                          {KEY_JOINTS.map((kj,kji)=><option key={kji} value={kji}>{kj.lbl}</option>)}
+                        </select>
+                        {jointPanels.length>1&&<Btn small danger onClick={()=>setJointPanels(prev=>prev.filter((_,i)=>i!==pi))}>×</Btn>}
+                      </div>
+                    }>
+                      <ResponsiveContainer>
+                        <LineChart data={data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                          <XAxis dataKey="t" type="number" domain={[0, +(mvnx?.duration||0).toFixed(2)]}
+                            tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                          <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/>
+                          <Tooltip content={Tt}/>
+                          <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
+                          <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
+                          {PLANE_LABELS.map((pl,pli)=>!!(panel.planes & (1<<pli))&&(
+                            <Line key={pl} type="monotone" dataKey={pl} stroke={PLANE_COLORS[pli]}
+                              dot={false} strokeWidth={1.5} name={PLANE_NAMES[pli]}/>
+                          ))}
+                          {data.length>0&&(panel.planes&(panel.planes-1))!==0&&<Legend wrapperStyle={{fontSize:10}}/>}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </ChartCard>
+                  );
+                })}
+                <div style={{marginBottom:12}}>
+                  <Btn small onClick={()=>setJointPanels(prev=>[...prev,{jointKey:0,planes:4}])}>+ Add Joint Panel</Btn>
+                </div>
+
+                {hasLS&&(()=>{
+                  const clipped = lsf.blipTime != null
+                    ? lsf.data.filter(d => d.time >= lsf.blipTime).map(d => ({...d, time: +(d.time - lsf.blipTime).toFixed(3)}))
+                    : lsf.data;
+                  const stride = Math.max(1, Math.floor(clipped.length/200));
+                  const d = clipped.filter((_,i) => i%stride===0);
+                  return (
+                    <ChartCard title="LoadSOL GRF (aligned)" h={150}>
+                      <ResponsiveContainer><LineChart data={d}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                        <XAxis dataKey="time" type="number" domain={[0,"auto"]}
+                          tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="s"/>
+                        <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="N"/>
+                        <Tooltip content={Tt}/>
+                        <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
+                        <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={1.5} name="L"/>
+                        <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={1.5} name="R"/>
+                      </LineChart></ResponsiveContainer>
+                    </ChartCard>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  TAB 2 — CYCLES
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderCycles = () => {
+    const mvnxFiles = activeJob?.mvnxFiles || [];
+    if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
+    if (!mvnxFiles.length) return (
+      <div>{activeJob&&<FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
+        <EmptyState icon="📊" title="No cycle data" detail="Upload multiple MVNX files (one per cycle/trial) to compare."
+          action={<Btn active onClick={()=>openUpload("mvnx")}>Upload MVNX Files</Btn>}/>
+      </div>
+    );
+
+    const firstJoints = mvnxFiles[0]?.jointLabels || [];
+    const availableKJ = KEY_JOINTS.map((kj,i) => ({...kj, ki:i, ji:firstJoints.findIndex(l=>kj.r.test(l))})).filter(k=>k.ji>=0);
+    const safeKey = Math.min(cycleJointKey, availableKJ.length-1);
+    const selected = availableKJ[safeKey] || availableKJ[0];
+    if (!selected) return <EmptyState icon="⚠" title="No matching joints" detail="No clinical joints found in this MVNX file."/>;
+
+    const N=100;
+    const interp = (frames, ji) => {
+      const vals = (frames||[]).map(f => f.ja?.[ji*3] ?? 0);
+      if (!vals.length) return Array(N).fill(0);
+      return Array.from({length:N}, (_,i) => {
+        const pos=(i/(N-1))*(vals.length-1), lo=Math.floor(pos), hi=Math.ceil(pos);
+        return vals[lo]*(1-(pos-lo))+(vals[hi]??vals[lo])*(pos-lo);
+      });
+    };
+
+    const cycles = mvnxFiles.map((f,i) => ({
+      name: f.name.replace(/\.mvnx\.mvnx$|\.mvnx$/i,""),
+      color: CYCLE_COLORS[i%CYCLE_COLORS.length],
+      vals: interp(f.frames, selected.ji),
+    }));
+    const means = Array.from({length:N}, (_,i) => cycles.reduce((s,c)=>s+c.vals[i],0)/cycles.length);
+    const sds   = Array.from({length:N}, (_,i) => { const m=means[i]; return Math.sqrt(cycles.reduce((s,c)=>s+(c.vals[i]-m)**2,0)/cycles.length); });
+    const pctData = Array.from({length:N}, (_,i) => {
+      const pt={pct:i, mean:+means[i].toFixed(2), hi:+(means[i]+sds[i]).toFixed(2), lo:+(means[i]-sds[i]).toFixed(2)};
+      cycles.forEach(c => { pt[c.name]=+c.vals[i].toFixed(2); });
+      return pt;
+    });
+    const n = cycles.length;
+    const corr = cycles.map((a,i) => cycles.map((b,j) => {
+      if (i===j) return 1;
+      const ma=a.vals.reduce((s,v)=>s+v,0)/N, mb=b.vals.reduce((s,v)=>s+v,0)/N;
+      const num=a.vals.reduce((s,v,k)=>s+(v-ma)*(b.vals[k]-mb),0);
+      const da=Math.sqrt(a.vals.reduce((s,v)=>s+(v-ma)**2,0)), db=Math.sqrt(b.vals.reduce((s,v)=>s+(v-mb)**2,0));
+      return da&&db ? +(num/(da*db)).toFixed(3) : 0;
+    }));
+
+    return (
+      <div>
+        {activeJob&&<FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",marginBottom:14}}>
+          <div style={{fontSize:11,color:C.muted,marginBottom:8}}>Joint (flexion/extension):</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {availableKJ.map((kj,i)=>(
+              <Btn key={i} small active={safeKey===i} onClick={()=>setCycleJointKey(i)}>{kj.lbl}</Btn>
+            ))}
+          </div>
+        </div>
+        <ChartCard title={`Cycle Overlay — ${selected.lbl} FE (time-normalised)`} h={280}>
+          <ResponsiveContainer>
+            <ComposedChart data={pctData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+              <XAxis dataKey="pct" tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="%"/>
+              <YAxis tick={{fill:C.muted,fontSize:9}} stroke={C.border} unit="°"/>
+              <Tooltip content={Tt}/>
+              <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
+              <Area type="monotone" dataKey="hi" stroke="none" fill={C.teal} fillOpacity={0.12} legendType="none" name="SD+"/>
+              <Area type="monotone" dataKey="lo" stroke="none" fill={C.bg} fillOpacity={1} legendType="none" name="SD−"/>
+              {cycles.map(c=><Line key={c.name} type="monotone" dataKey={c.name} stroke={c.color} dot={false} strokeWidth={1.5} opacity={0.8}/>)}
+              <Line type="monotone" dataKey="mean" stroke={C.teal} dot={false} strokeWidth={2.5} name="Mean" strokeDasharray="6 2"/>
+            </ComposedChart>
+          </ResponsiveContainer>
+        </ChartCard>
+        {n>1&&(
+          <ChartCard title="Correlation Matrix" h={n*44+60}>
+            <div style={{overflowX:"auto"}}>
+              <table style={{borderCollapse:"collapse",fontSize:11,color:C.text}}>
+                <thead><tr>
+                  <th style={{padding:"4px 10px",color:C.muted}}/>
+                  {cycles.map((c,i)=><th key={i} style={{padding:"4px 10px",color:c.color,fontWeight:600}}>{c.name}</th>)}
+                </tr></thead>
+                <tbody>{corr.map((row,i)=>(
+                  <tr key={i}>
+                    <td style={{padding:"4px 10px",color:cycles[i].color,fontWeight:600}}>{cycles[i].name}</td>
+                    {row.map((r,j)=>(
+                      <td key={j} style={{padding:"4px 10px",textAlign:"center",
+                        background:i===j?"transparent":`rgba(13,148,136,${Math.abs(r)*0.4})`,
+                        color:i===j?C.muted:r>0.95?C.accent:r>0.8?C.teal:C.amber,borderRadius:4}}>
+                        {i===j?"—":r.toFixed(3)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </ChartCard>
+        )}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
+          <Stat label="Cycles" value={n} unit="files"/>
+          <Stat label="Peak (mean)" value={Math.max(...means).toFixed(1)} unit="°"/>
+          <Stat label="Avg SD" value={(sds.reduce((s,v)=>s+v,0)/sds.length).toFixed(1)} unit="°" sub="variability"/>
+          {n>1&&<Stat label="Mean r" value={(corr.flat().filter((_,k)=>k%(n+1)!==0).reduce((s,v)=>s+v,0)/(n*(n-1))).toFixed(3)} sub="inter-cycle" color={C.teal}/>}
+        </div>
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  TAB 3 — LOADSOL
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderLoadSOL = () => {
+    const loadsolFiles = activeJob?.loadsolFiles || [];
+    if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
+    const renderOne = (lsf, label) => {
+      const stride = Math.max(1, Math.floor(lsf.data.length/300));
+      const d = lsf.data.filter((_,i) => i%stride===0);
+      return (
+        <div key={lsf.id} style={{marginBottom:24}}>
+          {label&&<div style={{fontSize:13,fontWeight:600,color:C.accent,marginBottom:10}}>{label}</div>}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:14}}>
+            <Stat label="Left Peak"  value={lsf.stats.leftMax.toFixed(0)}  unit="N"/>
+            <Stat label="Right Peak" value={lsf.stats.rightMax.toFixed(0)} unit="N"/>
+            <Stat label="XSENS Blip" value={lsf.blipTime?.toFixed(3)||"—"} unit="s"
+              color={lsf.blipTime?C.amber:undefined} sub={lsf.blipTime?"trigger detected":"not detected"}/>
+            <Stat label="Duration" value={(lsf.data[lsf.data.length-1]?.time||0).toFixed(1)} unit="s"/>
+          </div>
+          {lsf.blipTime&&(
+            <div style={{background:C.amber+"15",border:`1px solid ${C.amber}50`,borderLeft:`4px solid ${C.amber}`,borderRadius:8,padding:"10px 16px",fontSize:12,color:C.amber,marginBottom:14,display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{fontSize:16}}>⚡</span>
+              <span><b>XSENS sync blip at t = {lsf.blipTime.toFixed(3)}s</b> — area1 trigger channel spike detected.</span>
+            </div>
+          )}
+          <ChartCard title="Ground Reaction Forces — Left & Right" h={260}>
+            <ResponsiveContainer><LineChart data={d}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+              <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
+              <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
+              <Tooltip content={Tt}/><Legend wrapperStyle={{fontSize:11}}/>
+              {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2.5} label={{value:"⚡ XSENS Start",fill:C.amber,fontSize:11,position:"insideTopRight"}}/>}
+              <Line type="monotone" dataKey="left"  stroke={C.sky}  dot={false} strokeWidth={2} name="Left Foot"/>
+              <Line type="monotone" dataKey="right" stroke={C.rose} dot={false} strokeWidth={2} name="Right Foot"/>
+            </LineChart></ResponsiveContainer>
+          </ChartCard>
+          {lsf.data.some(d=>d.trig>0)&&(
+            <div style={{marginTop:8}}>
+              <button onClick={()=>setShowTriggerCh(v=>!v)}
+                style={{background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+                  padding:"4px 10px",color:C.muted,fontSize:11,cursor:"pointer",display:"flex",
+                  alignItems:"center",gap:6}}>
+                <span style={{fontSize:10}}>{showTriggerCh?"▼":"▶"}</span>
+                Sync Trigger Channel (area1)
+              </button>
+              {showTriggerCh&&(
+                <ChartCard title="Sync Trigger Channel (area1)" h={140}>
+                  <ResponsiveContainer><AreaChart data={d}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
+                    <XAxis dataKey="time" tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="s"/>
+                    <YAxis tick={{fill:C.muted,fontSize:10}} stroke={C.border} unit="N"/>
+                    <Tooltip content={Tt}/>
+                    {lsf.blipTime&&<ReferenceLine x={lsf.blipTime} stroke={C.amber} strokeWidth={2}/>}
+                    <Area type="monotone" dataKey="trig" stroke={C.amber} fill={C.amber+"30"} strokeWidth={2} name="Trigger" dot={false}/>
+                  </AreaChart></ResponsiveContainer>
+                </ChartCard>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    };
+    return (
+      <div>
+        {activeJob&&<FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
+        {!loadsolFiles.length ? (
+          <EmptyState icon="👟" title="No LoadSOL data" detail="Upload LoadSOL TXT. The area1 trigger channel will auto-detect the XSENS sync blip."
+            action={activeJobId&&<Btn active onClick={()=>openUpload("loadsol")}>Upload LoadSOL TXT</Btn>}/>
+        ) : loadsolFiles.map((lsf,i) => renderOne(lsf, loadsolFiles.length>1 ? lsf.name : null))}
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  TAB 4 — FORCES & DYNAMICS (combined)
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderForces = () => {
+    if (filesLoading) return <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>;
+
+    return (
+      <div>
+        {activeJob && <FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
+
+        <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:14,alignItems:"start",marginTop:10}}>
+
+          {/* ── Left column: skeleton viewer + force events panel ── */}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {renderSkeletonCore({showForcePanelToggle:false})}
+            <ErrorBoundary key={activeEventId||'none'}>
+              {renderForcePanel()}
+            </ErrorBoundary>
+          </div>
+
+          {/* ── Right column: charts with playback cursor ── */}
+          <ErrorBoundary>
+            {renderForcesRightCol()}
+          </ErrorBoundary>
+        </div>
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  TAB 5 — JOBS
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderJobs = () => (
+    <div>
+      <div style={{display:"flex",gap:8,marginBottom:18}}>
+        <Btn active onClick={()=>setShowJobModal(true)}>+ New Job</Btn>
+        {activeJobId&&<Btn onClick={()=>openUpload("mvnx")}>⬆ Upload Files</Btn>}
+      </div>
+      {jobsLoading ? (
+        <div style={{display:"flex",justifyContent:"center",padding:60}}><Spinner size={32}/></div>
+      ) : !jobs.length ? (
+        <EmptyState icon="🗂" title="No jobs yet" detail="Create a job to organise files per subject/session."
+          action={<Btn active onClick={()=>setShowJobModal(true)}>Create First Job</Btn>}/>
+      ) : (
+        <div style={{display:"grid",gap:10}}>
+          {jobs.map(job => (
+            <div key={job.id}
+              style={{background:C.card,border:`1px solid ${activeJobId===job.id?C.accent:C.border}`,borderRadius:10,padding:14,cursor:"pointer"}}
+              onClick={()=>setActiveJobId(job.id)}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                {editingJobId===job.id ? (
+                  <input value={editingJobName}
+                    onChange={e=>setEditingJobName(e.target.value)}
+                    onKeyDown={e=>{
+                      if (e.key==="Enter") { renameJob(job.id, editingJobName); setEditingJobId(null); }
+                      if (e.key==="Escape") setEditingJobId(null);
+                    }}
+                    onBlur={()=>{ renameJob(job.id, editingJobName); setEditingJobId(null); }}
+                    onClick={e=>e.stopPropagation()} autoFocus
+                    style={{background:C.bg,border:`1px solid ${C.accent}`,borderRadius:6,padding:"4px 10px",color:C.text,fontSize:14,fontWeight:700,flex:1,marginRight:8}}/>
+                ) : (
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:14,fontWeight:700,color:activeJobId===job.id?C.accent:C.text,marginBottom:2}}>
+                      {job.name}
+                      {activeJobId===job.id&&<span style={{fontSize:11,fontWeight:400,color:C.muted,marginLeft:8}}>● active</span>}
+                    </div>
+                    <div style={{fontSize:11,color:C.muted}}>Created: {job.createdAt}</div>
+                  </div>
+                )}
+                <div style={{display:"flex",gap:6}}>
+                  <Btn small onClick={e=>{e.stopPropagation();setEditingJobId(job.id);setEditingJobName(job.name);}}>✏ Rename</Btn>
+                  <Btn small danger onClick={e=>{e.stopPropagation();if(confirm(`Delete "${job.name}"?`)) deleteJob(job.id);}}>Delete</Btn>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap"}}>
+                {[["MVNX",(job._fileRecords||[]).filter(r=>r.file_type==="mvnx").length,C.teal],
+                  ["LoadSOL",(job._fileRecords||[]).filter(r=>r.file_type==="loadsol").length,C.sky],
+                  ["Force",(job._fileRecords||[]).filter(r=>r.file_type==="force").length,C.violet]
+                ].map(([lbl,cnt,clr])=>(
+                  <span key={lbl} style={{fontSize:11,padding:"3px 8px",borderRadius:12,background:cnt>0?clr+"20":"transparent",border:`1px solid ${cnt>0?clr+"60":C.border}`,color:cnt>0?clr:C.muted}}>{lbl}: {cnt}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  TAB 6 — PIPELINE
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderPipeline = () => (
+    <div>
+      <p style={{color:C.accent,fontWeight:600,fontSize:16,marginBottom:4}}>End-to-End Research Pipeline</p>
+      <p style={{color:C.muted,fontSize:13,marginBottom:22}}>XSENS MVN · LoadSOL · WiDACS → biomechanical modelling → ML risk classification.</p>
+      {[
+        {s:"1",t:"Data Acquisition",c:C.sky,d:"XSENS MVN 40Hz · LoadSOL insoles 200Hz · WiDACS force gauge 500Hz",det:"Create a Job → upload MVNX files (one per cycle), LoadSOL TXT, WiDACS CSV per session"},
+        {s:"2",t:"Skeleton Visualisation",c:C.amber,d:"3D→2D stick figure from MVNX segment positions — segments & bones read from file",det:"Skeleton tab: configurable joint panels per plane (FE/LB/AR), play/scrub, LoadSOL+Force overlaid"},
+        {s:"3",t:"Cycle Similarity",c:C.emerald,d:"Time-normalise cycles 0–100%, overlay FE traces, Pearson r matrix",det:"Cycles tab: key clinical joints (L4/L5, shoulders, elbows, hips, knees)"},
+        {s:"4",t:"Force Sync & Extension",c:C.violet,d:"Align WiDACS to MVNX via time offset slider or ⚡ snap to LoadSOL blip",det:"Forces tab: extend sustained push phase, add manual force blocks for unmeasured segments"},
+        {s:"5",t:"LoadSOL Sync Blip",c:C.orange,d:"Trigger channel (area1 col 11/12) — near-zero except for XSENS sync spike (~50N)",det:"LoadSOL tab: trigger channel plotted separately, blip time shown for alignment"},
+        {s:"6",t:"ML Classification",c:C.rose,d:"SVM-RBF · LOOCV · Binary MSD risk labels from injury records",det:"Metrics: Accuracy, PPV, Sensitivity, Specificity, F1, ROC/AUC"},
+      ].map(p=>(
+        <div key={p.s} style={{display:"flex",gap:14,marginBottom:12,alignItems:"flex-start"}}>
+          <div style={{width:32,height:32,borderRadius:"50%",background:p.c+"25",border:`2px solid ${p.c}`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:13,fontWeight:700,color:p.c}}>{p.s}</div>
+          <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px"}}>
+            <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:3}}>{p.t}</div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:5}}>{p.d}</div>
+            <div style={{fontSize:11,color:p.c,background:p.c+"10",padding:"5px 9px",borderRadius:5,borderLeft:`3px solid ${p.c}`}}>{p.det}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  MODALS
+  // ════════════════════════════════════════════════════════════════════════════
+  const renderJobModal = () => (
+    <Modal title="Create New Job" onClose={()=>setShowJobModal(false)}>
+      <div style={{marginBottom:14}}>
+        <label style={{display:"block",fontSize:12,color:C.muted,marginBottom:6}}>Job Name</label>
+        <input value={newJobName} onChange={e=>setNewJobName(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&createJob()} autoFocus
+          placeholder="e.g. Subject 01 — Session A"
+          style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",color:C.text,fontSize:13,boxSizing:"border-box"}}/>
+      </div>
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+        <Btn onClick={()=>setShowJobModal(false)}>Cancel</Btn>
+        <Btn active onClick={createJob}>Create Job</Btn>
+      </div>
+    </Modal>
+  );
+
+  const renderUploadModal = () => {
+    const info = {
+      mvnx:   {icon:"🦴",title:"Upload MVNX Files",  detail:"One .mvnx file per cycle trial",                   accept:".mvnx",    multi:true},
+      loadsol:{icon:"👟",title:"Upload LoadSOL TXT", detail:"Tab-separated TXT export from LoadSOL (one per cycle)",accept:".txt",    multi:true},
+      force:  {icon:"📈",title:"Upload Force CSV",   detail:"Time (col 1), Force (col 2). WiDACS CSV works directly.", accept:".csv,.txt",multi:false},
+    }[uploadType];
+    return (
+      <Modal title="Upload Files" onClose={()=>setShowUploadModal(false)}>
+        <div style={{fontSize:12,color:C.muted,marginBottom:12}}>Job: <span style={{color:C.accent,fontWeight:600}}>{activeJob?.name}</span></div>
+        <div style={{display:"flex",gap:6,marginBottom:16}}>
+          {[["mvnx","🦴 MVNX"],["loadsol","👟 LoadSOL"],["force","📈 Force"]].map(([k,lbl])=>(
+            <Btn key={k} active={uploadType===k} onClick={()=>setUploadType(k)}>{lbl}</Btn>
+          ))}
+        </div>
+        <div style={{background:C.bg,border:`2px dashed ${C.border}`,borderRadius:8,padding:32,textAlign:"center"}}>
+          <div style={{fontSize:30,marginBottom:8}}>{info.icon}</div>
+          <div style={{fontSize:14,fontWeight:600,color:C.text,marginBottom:5}}>{info.title}</div>
+          <div style={{fontSize:12,color:C.muted,marginBottom:18}}>{info.detail}</div>
+          <input ref={fileInputRef} type="file" multiple={info.multi} accept={info.accept} onChange={handleFileUpload} style={{display:"none"}}/>
+          <Btn active onClick={()=>fileInputRef.current?.click()}>Choose Files</Btn>
+        </div>
+      </Modal>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  ROOT RENDER
+  // ════════════════════════════════════════════════════════════════════════════
+  const panels = [renderSkeleton,renderCycles,renderLoadSOL,renderForces,renderJobs,renderPipeline];
+  return (
+    <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
+      <div style={{background:`linear-gradient(135deg,${C.bg},${C.card})`,borderBottom:`1px solid ${C.border}`,padding:"14px 24px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+          <div>
+            <div style={{fontSize:10,color:C.accent,textTransform:"uppercase",letterSpacing:2,marginBottom:3}}>OBEL · UWaterloo</div>
+            <div style={{fontSize:20,fontWeight:700}}>Biomechanics Research Dashboard</div>
+            <div style={{fontSize:12,color:C.muted}}>MVNX · LoadSOL · WiDACS · Cycle Analysis · MSD Risk</div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <select value={activeJobId||""} onChange={e=>setActiveJobId(e.target.value||null)}
+              style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 10px",color:activeJobId?C.text:C.muted,fontSize:12}}>
+              <option value="">— Select Job —</option>
+              {jobs.map(j=><option key={j.id} value={j.id}>{j.name}</option>)}
+            </select>
+            <Btn active onClick={()=>setShowJobModal(true)}>+ Job</Btn>
+            {activeJobId&&<Btn onClick={()=>setShowUploadModal(true)}>⬆ Upload</Btn>}
+            <div style={{display:"flex",alignItems:"center",gap:8,paddingLeft:8,borderLeft:`1px solid ${C.border}`}}>
+              <span style={{fontSize:11,color:C.muted}}>{session.user.email}</span>
+              <Btn small danger onClick={()=>supabase.auth.signOut()}>Sign Out</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+      {saveError && (
+        <div style={{background:"#7f1d1d",borderBottom:`1px solid #dc2626`,padding:"10px 24px",fontSize:12,color:"#fca5a5"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span style={{fontWeight:600}}>⚠ Settings save failed: {saveError}</span>
+            <span style={{cursor:"pointer",opacity:.7,marginLeft:12}} onClick={()=>setSaveError(null)}>✕</span>
+          </div>
+          <div style={{marginBottom:4}}>Run this in <strong>Supabase → SQL Editor</strong> to create all required columns:</div>
+          <pre style={{background:"rgba(0,0,0,.4)",padding:"8px 10px",borderRadius:4,fontSize:11,margin:0,overflowX:"auto",userSelect:"all"}}>{`ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS extend_duration numeric DEFAULT 0;
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS force_blocks jsonb DEFAULT '[]';
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS joint_panels jsonb DEFAULT '[]';
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS loadsol_pairings jsonb DEFAULT '{}';
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS body_mass numeric DEFAULT 75;
+ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS updated_at timestamptz;
+-- ensure job_id is unique so saves work correctly:
+ALTER TABLE job_settings ADD CONSTRAINT job_settings_job_id_key UNIQUE (job_id);`}</pre>
+        </div>
+      )}
+      <div style={{display:"flex",gap:4,padding:"10px 24px",borderBottom:`1px solid ${C.border}`,background:C.card,overflowX:"auto"}}>
+        {TABS.map((t,i)=>(
+          <button key={t} onClick={()=>setTab(i)} style={{
+            padding:"7px 16px",borderRadius:6,border:"none",whiteSpace:"nowrap",cursor:"pointer",
+            background:tab===i?C.accent+"20":"transparent",
+            color:tab===i?C.accent:C.muted,fontSize:12,fontWeight:tab===i?600:400
+          }}>{t}</button>
+        ))}
+      </div>
+      <div style={{padding:"18px 24px",maxWidth:1200,margin:"0 auto"}}>{panels[tab]()}</div>
+      {showJobModal&&renderJobModal()}
+      {showUploadModal&&activeJobId&&renderUploadModal()}
+    </div>
+  );
+}
+
