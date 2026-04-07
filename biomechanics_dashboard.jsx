@@ -17,8 +17,8 @@ const BUCKET = "biomechanics-files";
 const C = {
   teal:"#0d9488", amber:"#d97706", rose:"#e11d48", sky:"#0284c7",
   violet:"#7c3aed", emerald:"#059669", orange:"#f97316", pink:"#ec4899",
-  bg:"#0f172a", card:"#1e293b", border:"#334155",
-  text:"#e2e8f0", muted:"#94a3b8", accent:"#2dd4bf", red:"#dc2626"
+  bg:"#f8fafc", card:"#ffffff", border:"#e2e8f0",
+  text:"#1e293b", muted:"#64748b", accent:"#0d9488", red:"#dc2626"
 };
 const CYCLE_COLORS = [C.teal, C.amber, C.rose, C.sky, C.violet, C.emerald, C.orange, C.pink];
 const TABS = ["Skeleton","Cycles","LoadSOL","Forces & Dynamics","Jobs","Pipeline"];
@@ -1474,7 +1474,7 @@ function Dashboard({ session }) {
     const frame  = hasData ? mvnx.frames[Math.min(skelFrame, mvnx.frames.length-1)] : null;
     const positions = frame?.pos?.length ? frame.pos : REF_POS;
     const boneList  = mvnx?.bones?.length ? mvnx.bones : BONES;
-    const W=300, H=420;
+    const W=300, H=300;
     const pts = projectPos(positions, skelView, W, H);
     const ft  = frame?.time || 0;
 
@@ -1486,7 +1486,7 @@ function Dashboard({ session }) {
           ))}
         </div>
         <svg width={W} height={H} style={{display:"block",margin:"0 auto"}}>
-          <rect width={W} height={H} fill={C.bg} rx={8}/>
+          <rect width={W} height={H} fill={C.bg} rx={8} stroke={C.border} strokeWidth={1}/>
           {[0.25,0.5,0.75].map(p=>(
             <line key={p} x1={0} y1={H*p} x2={W} y2={H*p} stroke={C.border} strokeWidth={0.5} strokeDasharray="4 4"/>
           ))}
