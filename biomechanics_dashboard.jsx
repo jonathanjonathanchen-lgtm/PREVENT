@@ -1504,10 +1504,10 @@ function Dashboard({ session }) {
             return <circle key={i} cx={pt[0]} cy={pt[1]} r={/head/i.test(lbl)?7:4}
               fill={/head/i.test(lbl)?C.amber:C.accent} opacity={0.9}/>;
           })}
-          {/* Force arrows */}
+          {/* Force arrows (scaled down, no text labels) */}
           {(()=>{
             if(!curEvs.length) return null;
-            const arrows=[], segLabels=mvnx?.segLabels||[];
+            const arrows=[], segLabels=mvnx?.segLabels||[], handForces={right:0,left:0};
             const rHi=segLabels.findIndex(l=>/right.*hand|hand.*right/i.test(l));
             const lHi=segLabels.findIndex(l=>/left.*hand|hand.*left/i.test(l));
             curEvs.forEach(ev=>{
@@ -1521,8 +1521,11 @@ function Dashboard({ session }) {
               else if(localT>=avgData[avgData.length-1].time) forceMag=avgData[avgData.length-1].force;
               else { for(let k=0;k<avgData.length-1;k++){if(localT>=avgData[k].time&&localT<=avgData[k+1].time){const frac=(localT-avgData[k].time)/(avgData[k+1].time-avgData[k].time);forceMag=avgData[k].force+frac*(avgData[k+1].force-avgData[k].force);break;}}}
               if(forceMag<1) return;
+              // Accumulate for readout
+              if(ev.hand==='right'||ev.hand==='bilateral') handForces.right+=ev.hand==='bilateral'?forceMag*0.5:forceMag;
+              if(ev.hand==='left'||ev.hand==='bilateral') handForces.left+=ev.hand==='bilateral'?forceMag*0.5:forceMag;
               const peakForce=Math.max(...avgData.map(d=>d.force),1);
-              const arrowLen=Math.max(12,(forceMag/peakForce)*70);
+              const arrowLen=Math.max(8,(forceMag/peakForce)*40);
               const dirKey=ev.direction||'auto';
               let svgDir=null;
               if(dirKey!=='auto'&&DIR_SVG[dirKey]){const vec=DIR_SVG[dirKey][skelView]||[0,-1];const m=Math.sqrt(vec[0]**2+vec[1]**2)||1;svgDir=[vec[0]/m,vec[1]/m];}
@@ -1533,16 +1536,31 @@ function Dashboard({ session }) {
                 let dx=0,dy=-1;
                 if(!svgDir){const isRight=ev.hand==='right'||(ev.hand==='bilateral'&&hi===0);const fIdx=segLabels.findIndex(l=>isRight?/right.*(forearm|lowerarm|wrist)/i.test(l):/left.*(forearm|lowerarm|wrist)/i.test(l));if(fIdx>=0&&pts[fIdx]){const[fx,fy]=pts[fIdx];const rm=Math.sqrt((hx-fx)**2+(hy-fy)**2)||1;dx=(hx-fx)/rm;dy=(hy-fy)/rm;}}else[dx,dy]=svgDir;
                 const tipX=hx+dx*arrowLen,tipY=hy+dy*arrowLen;
-                const hl=8,ang=Math.atan2(dy,dx);
+                const hl=5,ang=Math.atan2(dy,dx);
                 const color=ev.hand==='left'||(ev.hand==='bilateral'&&hi===1)?"#4ade80":"#fbbf24";
                 arrows.push(<g key={`arr-${ev.id}-${hi}`}>
-                  <line x1={hx} y1={hy} x2={tipX} y2={tipY} stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
-                  <line x1={tipX} y1={tipY} x2={tipX-hl*Math.cos(ang-0.5)} y2={tipY-hl*Math.sin(ang-0.5)} stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
-                  <line x1={tipX} y1={tipY} x2={tipX-hl*Math.cos(ang+0.5)} y2={tipY-hl*Math.sin(ang+0.5)} stroke={color} strokeWidth={2.5} strokeLinecap="round"/>
-                  <text x={tipX+dx*4} y={tipY+dy*4+4} fill={color} fontSize={9} textAnchor="middle" fontWeight="bold">{forceMag.toFixed(0)}N</text>
+                  <line x1={hx} y1={hy} x2={tipX} y2={tipY} stroke={color} strokeWidth={1.8} strokeLinecap="round"/>
+                  <line x1={tipX} y1={tipY} x2={tipX-hl*Math.cos(ang-0.5)} y2={tipY-hl*Math.sin(ang-0.5)} stroke={color} strokeWidth={1.8} strokeLinecap="round"/>
+                  <line x1={tipX} y1={tipY} x2={tipX-hl*Math.cos(ang+0.5)} y2={tipY-hl*Math.sin(ang+0.5)} stroke={color} strokeWidth={1.8} strokeLinecap="round"/>
                 </g>);
               });
             });
+            // Force readout in bottom-right corner — R always top, L always bottom
+            const hasAny=handForces.right>0||handForces.left>0;
+            if(hasAny){
+              const rVal=handForces.right, lVal=handForces.left;
+              arrows.push(
+                <g key="force-readout">
+                  <rect x={W-95} y={H-42} width={88} height={36} rx={5} fill={C.bg} fillOpacity={0.85} stroke={C.border} strokeWidth={0.5}/>
+                  <text x={W-90} y={H-25} fill={rVal>0?"#fbbf24":C.muted} fontSize={rVal>0?12:9} fontWeight={rVal>0?"700":"400"} fontFamily="monospace">
+                    {rVal>0?`R ${rVal.toFixed(0)} N`:"R  —"}
+                  </text>
+                  <text x={W-90} y={H-10} fill={lVal>0?"#4ade80":C.muted} fontSize={lVal>0?12:9} fontWeight={lVal>0?"700":"400"} fontFamily="monospace">
+                    {lVal>0?`L ${lVal.toFixed(0)} N`:"L  —"}
+                  </text>
+                </g>
+              );
+            }
             return arrows;
           })()}
           {!hasData&&<text x={W/2} y={H-16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose — upload MVNX</text>}
