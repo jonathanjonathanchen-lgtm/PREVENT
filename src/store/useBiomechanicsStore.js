@@ -46,7 +46,7 @@ const useBiomechanicsStore = create((set, get) => ({
   skelSpeed: 1,
   skelLoadsolIdx: 0,
 
-  setSkelFrame: (v) => set({ skelFrame: v }),
+  setSkelFrame: (v) => set(state => ({ skelFrame: typeof v === 'function' ? v(state.skelFrame) : v })),
   setSkelView: (v) => set({ skelView: v }),
   setSkelFileIdx: (v) => set({ skelFileIdx: v }),
   setSkelPlaying: (v) => set(state => ({ skelPlaying: typeof v === 'function' ? v(state.skelPlaying) : v })),
