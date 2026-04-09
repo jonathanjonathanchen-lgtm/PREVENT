@@ -7,7 +7,7 @@ export const C = {
 };
 
 export const CYCLE_COLORS = [C.teal, C.amber, C.rose, C.sky, C.violet, C.emerald, C.orange, C.pink];
-export const TABS = ["Skeleton","Cycles","LoadSOL","Forces & Dynamics","Jobs","Pipeline"];
+export const TABS = ["Skeleton","Cycles","LoadSOL","Forces & Dynamics","Jobs","Pipeline","Assumptions"];
 
 // ── Skeleton bone fallback (Z-up XSENS: x=forward, y=left, z=up) ─────────────
 export const BONES = [
@@ -48,14 +48,14 @@ export const KEY_JOINTS = [
 // ZXY Euler order from MVNX: index 0 = Z = LB/Abd, index 1 = X = AR/IE, index 2 = Y = FE
 export const PLANE_LABELS = ["LB","AR","FE"];
 export const PLANE_COLORS = [C.amber, C.rose, C.teal];
-export const PLANE_NAMES  = ["Lat Bend / Abd (\u00B0)","Axial Rot / IE (\u00B0)","Flex/Ext (\u00B0)"];
+export const PLANE_NAMES  = ["Lat Bend / Abd (°)","Axial Rot / IE (°)","Flex/Ext (°)"];
 
 // Force direction options for UI
 export const TYPE_OPTS = ['push','lift','pinch','pull','carry'];
 export const HAND_OPTS = [{v:'right',l:'Right'},{v:'left',l:'Left'},{v:'bilateral',l:'Both'}];
 export const DIR_OPTS  = [
-  {v:'auto',l:'Auto (hand axis)'},{v:'+x',l:'Forward (+X)'},{v:'-x',l:'Backward (\u2212X)'},
-  {v:'+y',l:'Left (+Y)'},{v:'-y',l:'Right (\u2212Y)'},{v:'+z',l:'Up (+Z)'},{v:'-z',l:'Down (\u2212Z)'},
+  {v:'auto',l:'Auto (hand axis)'},{v:'+x',l:'Forward (+X)'},{v:'-x',l:'Backward (−X)'},
+  {v:'+y',l:'Left (+Y)'},{v:'-y',l:'Right (−Y)'},{v:'+z',l:'Up (+Z)'},{v:'-z',l:'Down (−Z)'},
 ];
 
 // Force direction → SVG vector lookup (per skeleton view)

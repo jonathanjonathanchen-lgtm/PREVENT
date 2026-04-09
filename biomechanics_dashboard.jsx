@@ -31,6 +31,7 @@ import CyclesTab from "./src/components/CyclesTab.jsx";
 import LoadSOLTab from "./src/components/LoadSOLTab.jsx";
 import JobsTab from "./src/components/JobsTab.jsx";
 import PipelineTab from "./src/components/PipelineTab.jsx";
+import AssumptionsTab from "./src/components/AssumptionsTab.jsx";
 
 // ── Error Boundary ──
 class ErrorBoundary extends Component {
@@ -130,10 +131,10 @@ function Dashboard({ session }) {
       readyToSaveRef.current = false;
 
       const dl = async (name, path) => {
-        setLoadingMsg(`Downloading ${name}\u2026`);
+        setLoadingMsg(`Downloading ${name}…`);
         const { data, error } = await supabase.storage.from(BUCKET).download(path);
         if (error || !data) return null;
-        setLoadingMsg(`Parsing ${name}\u2026`);
+        setLoadingMsg(`Parsing ${name}…`);
         return await blobToText(data);
       };
 
@@ -422,7 +423,7 @@ function Dashboard({ session }) {
 
     if (filesLoading) return (
       <div style={{display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 300, gap: 14}}>
-        <Spinner size={32}/><div style={{fontSize: 13, color: C.muted}}>{loadingMsg || "Loading files\u2026"}</div>
+        <Spinner size={32}/><div style={{fontSize: 13, color: C.muted}}>{loadingMsg || "Loading files\…"}</div>
       </div>
     );
 
@@ -431,12 +432,12 @@ function Dashboard({ session }) {
         {activeJob && <FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
         {activeJob && (
           <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 8, marginBottom: 12}}>
-            <Stat label="Cycles" value={mvnxFiles.length || "\u2014"} unit="files"/>
-            <Stat label="Duration" value={mvnx?.duration?.toFixed(1) || "\u2014"} unit="s"/>
-            <Stat label="GRF Peak R" value={lsf?.stats?.rightMax?.toFixed(0) || "\u2014"} unit="N"/>
-            <Stat label="GRF Peak L" value={lsf?.stats?.leftMax?.toFixed(0) || "\u2014"} unit="N"/>
-            <Stat label="Format" value={mvnx?.sourceFormat?.toUpperCase() || "\u2014"} unit="" color={C.teal}/>
-            <Stat label="Force Events" value={curEvs?.length || "\u2014"} unit=""/>
+            <Stat label="Cycles" value={mvnxFiles.length || "—"} unit="files"/>
+            <Stat label="Duration" value={mvnx?.duration?.toFixed(1) || "—"} unit="s"/>
+            <Stat label="GRF Peak R" value={lsf?.stats?.rightMax?.toFixed(0) || "—"} unit="N"/>
+            <Stat label="GRF Peak L" value={lsf?.stats?.leftMax?.toFixed(0) || "—"} unit="N"/>
+            <Stat label="Format" value={mvnx?.sourceFormat?.toUpperCase() || "—"} unit="" color={C.teal}/>
+            <Stat label="Force Events" value={curEvs?.length || "—"} unit=""/>
           </div>
         )}
 
@@ -458,12 +459,12 @@ function Dashboard({ session }) {
                     {f.name.replace(/\.mvnx\.mvnx$|\.mvnx$|\.csv$/i, "")}
                     {f.sourceFormat === 'csv' && <span style={{fontSize: 9, color: C.amber, marginLeft: 4}}>CSV</span>}
                   </span>
-                  <span style={{textAlign: "center", color: C.muted, fontSize: 11}}>{"\u2192"}</span>
+                  <span style={{textAlign: "center", color: C.muted, fontSize: 11}}>→</span>
                   {loadsolFilesList.length > 0 ? (
                     <select value={pairedIdx ?? ""} onClick={e => e.stopPropagation()}
                       onChange={e => { const v = e.target.value === "" ? null : +e.target.value; setLoadsolPairings(prev => ({...prev, [i]: v})); }}
                       style={{background: C.card, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 4px", color: pairedIdx != null ? C.text : C.muted, fontSize: 11, width: "100%"}}>
-                      <option value="">{"\u2014 none \u2014"}</option>
+                      <option value="">{"— none —"}</option>
                       {loadsolFilesList.map((ls, li) => <option key={li} value={li}>{ls.name.replace(/\.txt$/i, "")}</option>)}
                     </select>
                   ) : <span style={{fontSize: 11, color: C.muted, fontStyle: "italic"}}>no LoadSOL</span>}
@@ -475,7 +476,7 @@ function Dashboard({ session }) {
 
         {/* Two-column layout */}
         {!activeJobId ? (
-          <EmptyState icon={"\uD83D\uDDC2"} title="No job selected" detail="Create or select a job to get started."
+          <EmptyState icon="🗂" title="No job selected" detail="Create or select a job to get started."
             action={<Btn active onClick={() => setShowJobModal(true)}>Create Job</Btn>}/>
         ) : (
           <div style={{display: "grid", gridTemplateColumns: showForcePanel ? "300px 1fr" : "300px 1fr", gap: 14, alignItems: "start"}}>
@@ -497,7 +498,7 @@ function Dashboard({ session }) {
                     <ChartCard key={pi} h={180} title={
                       <span>{kj.lbl}{curAngles && panel.planes > 0 && (
                         <span style={{fontSize: 10, fontWeight: 400, color: C.muted, marginLeft: 8}}>
-                          {[0, 1, 2].filter(pli => panel.planes & (1 << pli)).map(pli => `${PLANE_LABELS[pli]}: ${curAngles[PLANE_LABELS[pli]]?.toFixed?.(1) ?? 0}\u00B0`).join("  ")}
+                          {[0, 1, 2].filter(pli => panel.planes & (1 << pli)).map(pli => `${PLANE_LABELS[pli]}: ${curAngles[PLANE_LABELS[pli]]?.toFixed?.(1) ?? 0}°`).join("  ")}
                         </span>
                       )}</span>
                     } action={
@@ -511,7 +512,7 @@ function Dashboard({ session }) {
                           style={{background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 4px", color: C.muted, fontSize: 10, marginLeft: 4}}>
                           {KEY_JOINTS.map((kj, kji) => <option key={kji} value={kji}>{kj.lbl}</option>)}
                         </select>
-                        {jointPanels.length > 1 && <Btn small danger onClick={() => setJointPanels(prev => prev.filter((_, i) => i !== pi))}>{"\u00D7"}</Btn>}
+                        {jointPanels.length > 1 && <Btn small danger onClick={() => setJointPanels(prev => prev.filter((_, i) => i !== pi))}>×</Btn>}
                       </div>
                     }>
                       <ResponsiveContainer>
@@ -519,7 +520,7 @@ function Dashboard({ session }) {
                           <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
                           <XAxis dataKey="t" type="number" domain={[0, +(mvnx?.duration || 0).toFixed(2)]}
                             tick={{fill: C.muted, fontSize: 9}} stroke={C.border} unit="s"/>
-                          <YAxis tick={{fill: C.muted, fontSize: 9}} stroke={C.border} unit="\u00B0"/>
+                          <YAxis tick={{fill: C.muted, fontSize: 9}} stroke={C.border} unit="°"/>
                           <Tooltip content={Tt}/>
                           <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
                           <ReferenceLine x={ft} stroke={C.amber} strokeWidth={2} isFront/>
@@ -597,6 +598,7 @@ function Dashboard({ session }) {
     renderForces,
     () => <JobsTab openUpload={openUpload}/>,
     () => <PipelineTab/>,
+    () => <AssumptionsTab/>,
   ];
 
   // ── Modals ──
@@ -606,7 +608,7 @@ function Dashboard({ session }) {
         <label style={{display: "block", fontSize: 12, color: C.muted, marginBottom: 6}}>Job Name</label>
         <input value={newJobName} onChange={e => setNewJobName(e.target.value)}
           onKeyDown={e => e.key === "Enter" && createJob()} autoFocus
-          placeholder="e.g. Subject 01 \u2014 Session A"
+          placeholder="e.g. Subject 01 \— Session A"
           style={{width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px 12px", color: C.text, fontSize: 13, boxSizing: "border-box"}}/>
       </div>
       <div style={{display: "flex", gap: 8, justifyContent: "flex-end"}}>
@@ -618,16 +620,16 @@ function Dashboard({ session }) {
 
   const renderUploadModal = () => {
     const info = {
-      mvnx:    {icon: "\uD83E\uDDB4", title: "Upload MVNX Files", detail: "One .mvnx XML file per cycle trial", accept: ".mvnx", multi: true},
-      csv:     {icon: "\uD83D\uDCC4", title: "Upload XSENS CSV", detail: "Standard XSENS .csv exports (position, acceleration, etc.)", accept: ".csv,.xlsx", multi: true},
-      loadsol: {icon: "\uD83D\uDC5F", title: "Upload LoadSOL TXT", detail: "Tab-separated TXT export from LoadSOL", accept: ".txt", multi: true},
-      force:   {icon: "\uD83D\uDCC8", title: "Upload Force CSV", detail: "Time (col 1), Force (col 2). WiDACS CSV works directly.", accept: ".csv,.txt", multi: false},
+      mvnx:    {icon: "🦴", title: "Upload MVNX Files", detail: "One .mvnx XML file per cycle trial", accept: ".mvnx", multi: true},
+      csv:     {icon: "📊", title: "Upload XSENS CSV", detail: "Standard XSENS .csv exports (position, acceleration, etc.)", accept: ".csv", multi: true},
+      loadsol: {icon: "👟", title: "Upload LoadSOL TXT", detail: "Tab-separated TXT export from LoadSOL", accept: ".txt", multi: true},
+      force:   {icon: "📈", title: "Upload Force CSV", detail: "Time (col 1), Force (col 2). WiDACS CSV works directly.", accept: ".csv,.txt", multi: false},
     }[uploadType];
     return (
       <Modal title="Upload Files" onClose={() => setShowUploadModal(false)}>
         <div style={{fontSize: 12, color: C.muted, marginBottom: 12}}>Job: <span style={{color: C.accent, fontWeight: 600}}>{activeJob?.name}</span></div>
         <div style={{display: "flex", gap: 6, marginBottom: 16}}>
-          {[["mvnx", "\uD83E\uDDB4 MVNX"], ["csv", "\uD83D\uDCC4 CSV"], ["loadsol", "\uD83D\uDC5F LoadSOL"], ["force", "\uD83D\uDCC8 Force"]].map(([k, lbl]) => (
+          {[["mvnx", "🦴 MVNX"], ["csv", "📊 CSV"], ["loadsol", "👟 LoadSOL"], ["force", "📈 Force"]].map(([k, lbl]) => (
             <Btn key={k} active={uploadType === k} onClick={() => setUploadType(k)}>{lbl}</Btn>
           ))}
         </div>
@@ -648,18 +650,18 @@ function Dashboard({ session }) {
       <div style={{background: `linear-gradient(135deg,${C.bg},${C.card})`, borderBottom: `1px solid ${C.border}`, padding: "14px 24px"}}>
         <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10}}>
           <div>
-            <div style={{fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: 2, marginBottom: 3}}>OBEL \u00B7 UWaterloo</div>
+            <div style={{fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: 2, marginBottom: 3}}>OBEL · UWaterloo</div>
             <div style={{fontSize: 20, fontWeight: 700}}>Biomechanics Research Dashboard</div>
-            <div style={{fontSize: 12, color: C.muted}}>MVNX \u00B7 CSV \u00B7 LoadSOL \u00B7 WiDACS \u00B7 Cycle Analysis \u00B7 MSD Risk</div>
+            <div style={{fontSize: 12, color: C.muted}}>MVNX · CSV · LoadSOL · WiDACS · Cycle Analysis · MSD Risk</div>
           </div>
           <div style={{display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap"}}>
             <select value={activeJobId || ""} onChange={e => setActiveJobId(e.target.value || null)}
               style={{background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", color: activeJobId ? C.text : C.muted, fontSize: 12}}>
-              <option value="">{"\u2014 Select Job \u2014"}</option>
+              <option value="">{"— Select Job —"}</option>
               {jobs.map(j => <option key={j.id} value={j.id}>{j.name}</option>)}
             </select>
             <Btn active onClick={() => setShowJobModal(true)}>+ Job</Btn>
-            {activeJobId && <Btn onClick={() => setShowUploadModal(true)}>{"\u2B06"} Upload</Btn>}
+            {activeJobId && <Btn onClick={() => setShowUploadModal(true)}>⬆ Upload</Btn>}
             <div style={{display: "flex", alignItems: "center", gap: 8, paddingLeft: 8, borderLeft: `1px solid ${C.border}`}}>
               <span style={{fontSize: 11, color: C.muted}}>{session.user.email}</span>
               <Btn small danger onClick={() => supabase.auth.signOut()}>Sign Out</Btn>
@@ -670,10 +672,10 @@ function Dashboard({ session }) {
       {saveError && (
         <div style={{background: "#7f1d1d", borderBottom: "1px solid #dc2626", padding: "10px 24px", fontSize: 12, color: "#fca5a5"}}>
           <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6}}>
-            <span style={{fontWeight: 600}}>{"\u26A0"} Settings save failed: {saveError}</span>
-            <span style={{cursor: "pointer", opacity: .7, marginLeft: 12}} onClick={() => setSaveError(null)}>{"\u2715"}</span>
+            <span style={{fontWeight: 600}}>⚠ Settings save failed: {saveError}</span>
+            <span style={{cursor: "pointer", opacity: .7, marginLeft: 12}} onClick={() => setSaveError(null)}>✕</span>
           </div>
-          <div style={{marginBottom: 4}}>Run this in <strong>Supabase \u2192 SQL Editor</strong>:</div>
+          <div style={{marginBottom: 4}}>Run this in <strong>Supabase → SQL Editor</strong>:</div>
           <pre style={{background: "rgba(0,0,0,.4)", padding: "8px 10px", borderRadius: 4, fontSize: 11, margin: 0, overflowX: "auto", userSelect: "all"}}>{`ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS force_blocks jsonb DEFAULT '[]';
 ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS joint_panels jsonb DEFAULT '[]';
 ALTER TABLE job_settings ADD COLUMN IF NOT EXISTS loadsol_pairings jsonb DEFAULT '{}';

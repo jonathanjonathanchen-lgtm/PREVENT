@@ -18,7 +18,7 @@ export default function CyclesTab({ openUpload, removeFile }) {
   if (!mvnxFiles.length) return (
     <div>
       {activeJob && <FileBar job={activeJob} onUpload={openUpload} onRemove={removeFile}/>}
-      <EmptyState icon={"\uD83D\uDCCA"} title="No cycle data" detail="Upload multiple MVNX/CSV files (one per cycle/trial) to compare."
+      <EmptyState icon="📊" title="No cycle data" detail="Upload multiple MVNX/CSV files (one per cycle/trial) to compare."
         action={<Btn active onClick={() => openUpload("mvnx")}>Upload Files</Btn>}/>
     </div>
   );
@@ -27,15 +27,11 @@ export default function CyclesTab({ openUpload, removeFile }) {
   const availableKJ = KEY_JOINTS.map((kj, i) => ({...kj, ki: i, ji: firstJoints.findIndex(l => kj.r.test(l))})).filter(k => k.ji >= 0);
   const safeKey = Math.min(cycleJointKey, availableKJ.length - 1);
   const selected = availableKJ[safeKey] || availableKJ[0];
-  if (!selected) return <EmptyState icon={"\u26A0"} title="No matching joints" detail="No clinical joints found in this file."/>;
+  if (!selected) return <EmptyState icon="⚠" title="No matching joints" detail="No clinical joints found in this file."/>;
 
   const N = 100;
   const interp = (frames, ji) => {
-    // Use ergonomic joint angles when available (FE = index 2 in ZXY)
-    const vals = (frames || []).map(f => {
-      const angles = getJointAngles(f, ji);
-      return angles.FE;
-    });
+    const vals = (frames || []).map(f => f.ja?.[ji * 3] ?? 0);
     if (!vals.length) return Array(N).fill(0);
     return Array.from({length: N}, (_, i) => {
       const pos = (i / (N - 1)) * (vals.length - 1), lo = Math.floor(pos), hi = Math.ceil(pos);
@@ -75,16 +71,16 @@ export default function CyclesTab({ openUpload, removeFile }) {
           ))}
         </div>
       </div>
-      <ChartCard title={`Cycle Overlay \u2014 ${selected.lbl} FE (time-normalised)`} h={280}>
+      <ChartCard title={`Cycle Overlay — ${selected.lbl} FE (time-normalised)`} h={280}>
         <ResponsiveContainer>
           <ComposedChart data={pctData}>
             <CartesianGrid strokeDasharray="3 3" stroke={C.border}/>
             <XAxis dataKey="pct" tick={{fill: C.muted, fontSize: 9}} stroke={C.border} unit="%"/>
-            <YAxis tick={{fill: C.muted, fontSize: 9}} stroke={C.border} unit="\u00B0"/>
+            <YAxis tick={{fill: C.muted, fontSize: 9}} stroke={C.border} unit="°"/>
             <Tooltip content={Tt}/>
             <ReferenceLine y={0} stroke={C.border} strokeDasharray="3 3"/>
             <Area type="monotone" dataKey="hi" stroke="none" fill={C.teal} fillOpacity={0.12} legendType="none" name="SD+"/>
-            <Area type="monotone" dataKey="lo" stroke="none" fill={C.bg} fillOpacity={1} legendType="none" name="SD\u2212"/>
+            <Area type="monotone" dataKey="lo" stroke="none" fill={C.bg} fillOpacity={1} legendType="none" name="SD−"/>
             {cycles.map(c => <Line key={c.name} type="monotone" dataKey={c.name} stroke={c.color} dot={false} strokeWidth={1.5} opacity={0.8}/>)}
             <Line type="monotone" dataKey="mean" stroke={C.teal} dot={false} strokeWidth={2.5} name="Mean" strokeDasharray="6 2"/>
           </ComposedChart>
@@ -105,7 +101,7 @@ export default function CyclesTab({ openUpload, removeFile }) {
                     <td key={j} style={{padding: "4px 10px", textAlign: "center",
                       background: i === j ? "transparent" : `rgba(13,148,136,${Math.abs(r) * 0.4})`,
                       color: i === j ? C.muted : r > 0.95 ? C.accent : r > 0.8 ? C.teal : C.amber, borderRadius: 4}}>
-                      {i === j ? "\u2014" : r.toFixed(3)}
+                      {i === j ? "—" : r.toFixed(3)}
                     </td>
                   ))}
                 </tr>
@@ -116,8 +112,8 @@ export default function CyclesTab({ openUpload, removeFile }) {
       )}
       <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12}}>
         <Stat label="Cycles" value={n} unit="files"/>
-        <Stat label="Peak (mean)" value={Math.max(...means).toFixed(1)} unit="\u00B0"/>
-        <Stat label="Avg SD" value={(sds.reduce((s, v) => s + v, 0) / sds.length).toFixed(1)} unit="\u00B0" sub="variability"/>
+        <Stat label="Peak (mean)" value={Math.max(...means).toFixed(1)} unit="°"/>
+        <Stat label="Avg SD" value={(sds.reduce((s, v) => s + v, 0) / sds.length).toFixed(1)} unit="°" sub="variability"/>
         {n > 1 && <Stat label="Mean r" value={(corr.flat().filter((_, k) => k % (n + 1) !== 0).reduce((s, v) => s + v, 0) / (n * (n - 1))).toFixed(3)} sub="inter-cycle" color={C.teal}/>}
       </div>
     </div>

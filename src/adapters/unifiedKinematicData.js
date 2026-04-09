@@ -54,24 +54,18 @@ export function validateUnified(data) {
 }
 
 /**
- * Extract ergonomic joint angles when available, falling back to standard JA.
- * XSENS "Ergonomic Joint Angles ZXY" avoid gimbal lock and clinical misinterpretation.
+ * Extract joint angles from frame data.
+ * ZXY Euler from MVNX: index 0 = Z = LB/Abd, index 1 = X = AR/IE, index 2 = Y = FE
  *
  * @param {object} frame - UnifiedFrame
  * @param {number} jointIdx - Joint index
  * @returns {{ LB: number, AR: number, FE: number }}
  */
 export function getJointAngles(frame, jointIdx) {
-  // Prefer ergonomic angles if present
-  const src = (frame.ergoJA?.length > jointIdx * 3 + 2)
-    ? frame.ergoJA
-    : frame.ja;
-
+  const src = frame.ja;
   if (!src || src.length <= jointIdx * 3 + 2) {
     return { LB: 0, AR: 0, FE: 0 };
   }
-
-  // ZXY Euler from MVNX: index 0 = Z = LB/Abd, index 1 = X = AR/IE, index 2 = Y = FE
   return {
     LB: src[jointIdx * 3]     ?? 0,
     AR: src[jointIdx * 3 + 1] ?? 0,

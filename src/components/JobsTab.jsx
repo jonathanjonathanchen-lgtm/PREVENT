@@ -30,12 +30,12 @@ export default function JobsTab({ openUpload }) {
     <div>
       <div style={{display: "flex", gap: 8, marginBottom: 18}}>
         <Btn active onClick={() => setShowJobModal(true)}>+ New Job</Btn>
-        {activeJobId && <Btn onClick={() => openUpload("mvnx")}>{"\u2B06"} Upload Files</Btn>}
+        {activeJobId && <Btn onClick={() => openUpload("mvnx")}>⬆ Upload Files</Btn>}
       </div>
       {jobsLoading ? (
         <div style={{display: "flex", justifyContent: "center", padding: 60}}><Spinner size={32}/></div>
       ) : !jobs.length ? (
-        <EmptyState icon={"\uD83D\uDDC2"} title="No jobs yet" detail="Create a job to organise files per subject/session."
+        <EmptyState icon="🗂" title="No jobs yet" detail="Create a job to organise files per subject/session."
           action={<Btn active onClick={() => setShowJobModal(true)}>Create First Job</Btn>}/>
       ) : (
         <div style={{display: "grid", gap: 10}}>
@@ -55,13 +55,13 @@ export default function JobsTab({ openUpload }) {
                   <div style={{flex: 1}}>
                     <div style={{fontSize: 14, fontWeight: 700, color: activeJobId === job.id ? C.accent : C.text, marginBottom: 2}}>
                       {job.name}
-                      {activeJobId === job.id && <span style={{fontSize: 11, fontWeight: 400, color: C.muted, marginLeft: 8}}>{"\u25CF"} active</span>}
+                      {activeJobId === job.id && <span style={{fontSize: 11, fontWeight: 400, color: C.muted, marginLeft: 8}}>● active</span>}
                     </div>
                     <div style={{fontSize: 11, color: C.muted}}>Created: {job.createdAt}</div>
                   </div>
                 )}
                 <div style={{display: "flex", gap: 6}}>
-                  <Btn small onClick={e => { e.stopPropagation(); setEditingJobId(job.id); setEditingJobName(job.name); }}>{"\u270F"} Rename</Btn>
+                  <Btn small onClick={e => { e.stopPropagation(); setEditingJobId(job.id); setEditingJobName(job.name); }}>✏ Rename</Btn>
                   <Btn small danger onClick={e => { e.stopPropagation(); if (confirm(`Delete "${job.name}"?`)) deleteJob(job.id); }}>Delete</Btn>
                 </div>
               </div>

@@ -122,7 +122,7 @@ export default function DynamicsCharts({
           </div>
         )}
         <div style={{fontSize: 11, color: C.muted, marginLeft: "auto"}}>
-          {hasMvnx ? "\u2713 MVNX" : "\u2717 MVNX"} \u00B7 {hasLS ? "\u2713 LoadSOL" : "\u2717 LoadSOL"}
+          {hasMvnx ? "✓ MVNX" : "✗ MVNX"} · {hasLS ? "✓ LoadSOL" : "✗ LoadSOL"}
           <span style={{marginLeft: 8, color: useRigidBody ? C.teal : C.amber}}>
             {useRigidBody ? "RB Kin" : "Butterworth"}
           </span>
@@ -131,14 +131,14 @@ export default function DynamicsCharts({
 
       {/* Charts / empty states */}
       {!hasMvnx ? (
-        <EmptyState icon="\u2699\uFE0F" title="No MVNX loaded" detail="Select a job with MVNX data to compute shoulder moments."/>
+        <EmptyState icon="⚙️" title="No MVNX loaded" detail="Select a job with MVNX data to compute shoulder moments."/>
       ) : !hasData ? (
-        <EmptyState icon="\uD83D\uDCD0" title="No dynamics data" detail="Assign force events to hands to compute shoulder moments."/>
+        <EmptyState icon="📐" title="No dynamics data" detail="Assign force events to hands to compute shoulder moments."/>
       ) : (
         <>
           <div style={{display: "flex", alignItems: "center", gap: 12, borderBottom: `1px solid ${C.accent}40`, paddingBottom: 6}}>
             <span style={{fontSize: 12, fontWeight: 700, color: C.accent, textTransform: "uppercase", letterSpacing: .5}}>
-              Joint Moments \u2014 Quasi-Dynamic
+              Joint Moments — Quasi-Dynamic
             </span>
             <button onClick={() => setShowMomComponents(v => !v)} style={{
               marginLeft: "auto", background: "none", border: `1px solid ${C.border}`, borderRadius: 6,
@@ -149,21 +149,21 @@ export default function DynamicsCharts({
 
           {overlapRegions.length > 0 && (
             <div style={{background: C.red + "15", border: `1px solid ${C.red}40`, borderRadius: 8, padding: "8px 12px", fontSize: 11, color: C.red}}>
-              <div style={{fontWeight: 600, marginBottom: 2}}>{"\u26A0"} Force event time overlap detected</div>
+              <div style={{fontWeight: 600, marginBottom: 2}}>⚠ Force event time overlap detected</div>
               {overlapRegions.map((ol, i) => (
-                <div key={i} style={{fontSize: 10}}>"{ol.evA}" & "{ol.evB}" overlap {ol.x1.toFixed(2)}\u2013{ol.x2.toFixed(2)}s</div>
+                <div key={i} style={{fontSize: 10}}>"{ol.evA}" & "{ol.evB}" overlap {ol.x1.toFixed(2)}–{ol.x2.toFixed(2)}s</div>
               ))}
             </div>
           )}
 
           {!hasLS && (
             <div style={{background: C.amber + "15", border: `1px solid ${C.amber}40`, borderRadius: 8, padding: "8px 12px", fontSize: 11, color: C.amber}}>
-              No LoadSOL paired \u2014 L5/S1 bottom-up will be zero. Pair in Skeleton tab.
+              No LoadSOL paired — L5/S1 bottom-up will be zero. Pair in Skeleton tab.
             </div>
           )}
 
           <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14}}>
-            {jChart("L5/S1 \u2014 Bottom-Up (via LoadSOL)", "L5S1", C.sky)}
+            {jChart("L5/S1 — Bottom-Up (via LoadSOL)", "L5S1", C.sky)}
           </div>
           <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14}}>
             {jChart("Right Shoulder", "shoulderR", C.amber)}

@@ -15,7 +15,7 @@ export const FileBar = ({job, onUpload, onRemove}) => {
       color: onAdd ? C.muted : color, whiteSpace: "nowrap"
     }}>
       <span>{label}</span>
-      {onX && <span onClick={e => {e.stopPropagation(); onX();}} style={{cursor: "pointer", opacity: .7, fontSize: 15, lineHeight: 1, marginLeft: 2}}>\u00D7</span>}
+      {onX && <span onClick={e => {e.stopPropagation(); onX();}} style={{cursor: "pointer", opacity: .7, fontSize: 15, lineHeight: 1, marginLeft: 2}}>×</span>}
     </div>
   );
 
@@ -25,9 +25,9 @@ export const FileBar = ({job, onUpload, onRemove}) => {
         display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
         background: C.card, border: `1px solid ${C.border}`, borderRadius: open ? "8px 8px 0 0" : 8,
         padding: "6px 12px", cursor: "pointer", color: C.muted, fontSize: 11}}>
-        <span style={{fontSize: 9}}>{open ? "\u25BC" : "\u25B6"}</span>
+        <span style={{fontSize: 9}}>{open ? "▼" : "▶"}</span>
         <span style={{fontWeight: 500, color: C.text}}>Files</span>
-        <span style={{opacity: .6}}>{nM} MVNX \u00B7 {nL} LoadSOL \u00B7 {nF} WiDACS</span>
+        <span style={{opacity: .6}}>{nM} MVNX · {nL} LoadSOL · {nF} WiDACS</span>
         <span style={{marginLeft: "auto", fontSize: 10, color: C.accent}}>{open ? "hide" : "manage"}</span>
       </button>
       {open && (

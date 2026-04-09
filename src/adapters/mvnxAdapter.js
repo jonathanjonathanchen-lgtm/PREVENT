@@ -62,13 +62,9 @@ export function parseMVNX(xmlStr) {
         time:    ms / 1000,
         pos:     parse("position"),
         ja:      parse("jointAngle"),
-        // Ergonomic Joint Angles ZXY — preferred for clinical interpretation
-        ergoJA:  parse("jointAngleErgo") || parse("jointAngleXZY") || null,
         acc:     parse("acceleration"),
         angVel:  parse("angularVelocity"),
         angAcc:  parse("angularAcceleration"),
-        orient:  parse("orientation"),
-        sensorFreeAcc: parse("sensorFreeAcceleration") || null,
       });
     });
 

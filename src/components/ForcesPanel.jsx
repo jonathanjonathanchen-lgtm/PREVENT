@@ -69,7 +69,7 @@ export default function ForcesPanel({
       </div>
 
       {curEvs.length === 0 && (
-        <div style={{fontSize: 11, color: C.muted, padding: "10px 0", textAlign: "center"}}>No events yet \u2014 click + New to create one.</div>
+        <div style={{fontSize: 11, color: C.muted, padding: "10px 0", textAlign: "center"}}>No events yet — click + New to create one.</div>
       )}
 
       <div style={{display: "flex", flexDirection: "column", gap: 4}}>
@@ -92,19 +92,19 @@ export default function ForcesPanel({
                   {hasOverlap && <span style={{fontSize: 9, color: C.red, background: C.red + "20", padding: "1px 5px", borderRadius: 3, fontWeight: 600}}>OVERLAP</span>}
                 </div>
                 <div style={{fontSize: 10, color: C.muted}}>
-                  {ev.type} \u00B7 {ev.hand} \u00B7 {nTrials} trial{nTrials !== 1 ? 's' : ''}
-                  {peakF > 0 && <span style={{color: C.violet, marginLeft: 4}}>\u00B7 {peakF.toFixed(0)} N peak</span>}
+                  {ev.type} · {ev.hand} · {nTrials} trial{nTrials !== 1 ? 's' : ''}
+                  {peakF > 0 && <span style={{color: C.violet, marginLeft: 4}}>· {peakF.toFixed(0)} N peak</span>}
                 </div>
               </div>
               <Btn small onClick={e => { e.stopPropagation();
                 const id = `ev_${Date.now()}`;
                 setCurEvs(prev => [...prev, {...ev, id, label: ev.label + ' (copy)'}]);
                 setActiveEventId(id);
-              }} style={{fontSize: 10}}>{"\u29C9"}</Btn>
+              }} style={{fontSize: 10}}>⧉</Btn>
               <Btn small danger onClick={e => { e.stopPropagation();
                 setCurEvs(prev => prev.filter(x => x.id !== ev.id));
                 if (activeEventId === ev.id) setActiveEventId(null);
-              }}>{"\u00D7"}</Btn>
+              }}>×</Btn>
             </div>
           );
         })}
@@ -139,7 +139,7 @@ export default function ForcesPanel({
               onChange={e => updateEvent({tStart: parseFloat(e.target.value) || 0})}
               style={{width: 70, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, padding: "3px 8px", color: C.accent, fontSize: 11}}/>
             <span style={{fontSize: 11, color: C.muted}}>s</span>
-            <Btn small onClick={() => updateEvent({tStart: +skelTime.toFixed(3)})} style={{fontSize: 10, padding: "2px 6px"}}>{"\u23F1"} Set</Btn>
+            <Btn small onClick={() => updateEvent({tStart: +skelTime.toFixed(3)})} style={{fontSize: 10, padding: "2px 6px"}}>⏱ Set</Btn>
           </div>
           <div style={{display: "flex", gap: 6, alignItems: "center"}}>
             <span style={{fontSize: 11, color: C.muted, minWidth: 36}}>End:</span>
@@ -148,19 +148,19 @@ export default function ForcesPanel({
               onChange={e => { const v = e.target.value; updateEvent({tEnd: v === '' ? null : parseFloat(v) || 0}); }}
               style={{width: 70, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, padding: "3px 8px", color: activeEvent.tEnd != null ? C.amber : C.muted, fontSize: 11}}/>
             <span style={{fontSize: 11, color: C.muted}}>s</span>
-            <Btn small onClick={() => updateEvent({tEnd: +skelTime.toFixed(3)})} style={{fontSize: 10, padding: "2px 6px"}}>{"\u23F1"} Set</Btn>
-            {activeEvent.tEnd != null && <Btn small danger onClick={() => updateEvent({tEnd: null, timeSegments: []})}>{"\u2715"}</Btn>}
+            <Btn small onClick={() => updateEvent({tEnd: +skelTime.toFixed(3)})} style={{fontSize: 10, padding: "2px 6px"}}>⏱ Set</Btn>
+            {activeEvent.tEnd != null && <Btn small danger onClick={() => updateEvent({tEnd: null, timeSegments: []})}>✕</Btn>}
           </div>
 
           {/* Time normalization info */}
           {activeEvent.tEnd != null && (() => {
             const srcDur = averagedEvData.length ? averagedEvData[averagedEvData.length - 1].time : 0;
             const tgtDur = activeEvent.tEnd - (activeEvent.tStart || 0);
-            const ratio = srcDur > 0 ? (tgtDur / srcDur).toFixed(2) : '\u2014';
+            const ratio = srcDur > 0 ? (tgtDur / srcDur).toFixed(2) : '—';
             return (
               <div style={{fontSize: 10, color: C.amber, background: C.amber + "12", padding: "6px 10px", borderRadius: 5, border: `1px solid ${C.amber}30`}}>
                 <div style={{fontWeight: 600}}>Time Normalization Active</div>
-                <div>Recorded: {srcDur.toFixed(2)}s \u2192 {tgtDur.toFixed(2)}s ({ratio}\u00D7)</div>
+                <div>Recorded: {srcDur.toFixed(2)}s → {tgtDur.toFixed(2)}s ({ratio}×)</div>
               </div>
             );
           })()}
@@ -174,7 +174,7 @@ export default function ForcesPanel({
                 <div key={fi} onClick={() => updateEvent({fileIndices: sel ? (activeEvent.fileIndices || []).filter(x => x !== fi) : [...(activeEvent.fileIndices || []), fi]})}
                   style={{display: "flex", alignItems: "center", gap: 7, padding: "4px 8px", borderRadius: 5, cursor: "pointer",
                     background: sel ? C.violet + "20" : "transparent", border: `1px solid ${sel ? C.violet : C.border}`}}>
-                  <span style={{fontSize: 10, color: sel ? C.violet : C.muted}}>{sel ? "\u2713" : "\u25CB"}</span>
+                  <span style={{fontSize: 10, color: sel ? C.violet : C.muted}}>{sel ? "✓" : "○"}</span>
                   <span style={{fontSize: 11, color: sel ? C.text : C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{f.name}</span>
                 </div>
               );

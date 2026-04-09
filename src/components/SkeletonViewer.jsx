@@ -1,13 +1,8 @@
 // ── SkeletonViewer ───────────────────────────────────────────────────────────
-// 2D skeleton SVG with:
-//   - Hand segment orientation → projected fingertip rendering
-//   - Force arrows using hand local coordinate frame
-//   - Playback controls
-//   - Butterworth / RigidBody toggle button
+// 2D skeleton SVG with force arrows and playback controls.
+// Matches original rendering: bones, joint dots, force arrows from forearm→hand direction.
 
 import { C, BONES, REF_POS, DIR_SVG } from '../utils/constants.js';
-import { getQuat, quatToRotMatrix, mat3MulVec, vnorm, vget, vadd, vscale, vsub } from '../physics/vectorUtils.js';
-import { HAND_PROJECTION_LENGTH } from '../physics/winterParams.js';
 import { Btn } from './ui/index.js';
 import useBiomechanicsStore from '../store/useBiomechanicsStore.js';
 
@@ -30,44 +25,6 @@ function projectPos(flatPos, view, W, H) {
   return pts.map(([px, py]) => [px * sc + ox, oy - py * sc]);
 }
 
-/**
- * Compute fingertip position for hand segments using orientation data.
- * Projects a point ~10cm along the hand's local longitudinal axis.
- */
-function computeFingertip(flatPos, orientArr, segIdx, view, W, H, pts) {
-  if (!orientArr || orientArr.length <= segIdx * 4 + 3) return null;
-  if (!flatPos || flatPos.length <= segIdx * 3 + 2) return null;
-
-  const q = getQuat(orientArr, segIdx);
-  const R = quatToRotMatrix(q);
-  // Hand local X axis = longitudinal (wrist→fingertip)
-  const handDir = vnorm(mat3MulVec(R, [1, 0, 0]));
-  const wristPos = vget(flatPos, segIdx);
-  const tipPos = vadd(wristPos, vscale(handDir, HAND_PROJECTION_LENGTH));
-
-  // Project fingertip into 2D
-  let pt2d;
-  if (view === "front") pt2d = [tipPos[1], tipPos[2]];
-  else if (view === "side") pt2d = [tipPos[0], tipPos[2]];
-  else pt2d = [tipPos[1], tipPos[0]];
-
-  // Apply same transform as projectPos
-  const xs = [], ys = [];
-  for (let i = 0; i + 2 < flatPos.length; i += 3) {
-    const [x, y, z] = [flatPos[i], flatPos[i+1], flatPos[i+2]];
-    if (view === "front") { xs.push(y); ys.push(z); }
-    else if (view === "side") { xs.push(x); ys.push(z); }
-    else { xs.push(y); ys.push(x); }
-  }
-  const [mnX, mxX] = [Math.min(...xs), Math.max(...xs)];
-  const [mnY, mxY] = [Math.min(...ys), Math.max(...ys)];
-  const pad = 30;
-  const sc = Math.min((W-2*pad) / ((mxX-mnX) || 0.5), (H-2*pad) / ((mxY-mnY) || 2.0));
-  const ox = W/2 - (mnX+mxX)/2 * sc, oy = H/2 + (mnY+mxY)/2 * sc;
-
-  return [pt2d[0] * sc + ox, oy - pt2d[1] * sc];
-}
-
 export default function SkeletonViewer({
   mvnx, showForcePanelToggle = true,
   curEvs = [], allEvNormalized = {}, allEvAveraged = {},
@@ -87,15 +44,9 @@ export default function SkeletonViewer({
   const W = 300, H = 300;
   const pts = projectPos(positions, skelView, W, H);
   const ft = frame?.time || 0;
-
-  // Compute fingertip positions for hands
   const segLabels = mvnx?.segLabels || [];
-  const rHandIdx = segLabels.findIndex(l => /right.*hand|hand.*right/i.test(l));
-  const lHandIdx = segLabels.findIndex(l => /left.*hand|hand.*left/i.test(l));
-  const rFingertip = rHandIdx >= 0 ? computeFingertip(positions, frame?.orient, rHandIdx, skelView, W, H, pts) : null;
-  const lFingertip = lHandIdx >= 0 ? computeFingertip(positions, frame?.orient, lHandIdx, skelView, W, H, pts) : null;
 
-  // Force arrows
+  // Force arrows — matches original logic exactly
   const renderForceArrows = () => {
     if (!curEvs.length) return null;
     const arrows = [];
@@ -137,17 +88,13 @@ export default function SkeletonViewer({
         svgDir = [vec[0] / m, vec[1] / m];
       }
 
-      // Apply force at fingertip position instead of wrist
       const hands = ev.hand === 'bilateral' ? [rHi, lHi] : ev.hand === 'left' ? [lHi] : [rHi];
       hands.forEach((hIdx, hi) => {
-        if (hIdx < 0) return;
-        const isRight = ev.hand === 'right' || (ev.hand === 'bilateral' && hi === 0);
-        // Use fingertip position if available
-        const tipPt = isRight ? rFingertip : lFingertip;
-        const [hx, hy] = tipPt || pts[hIdx] || [0, 0];
-
+        if (hIdx < 0 || !pts[hIdx]) return;
+        const [hx, hy] = pts[hIdx];
         let dx = 0, dy = -1;
         if (!svgDir) {
+          const isRight = ev.hand === 'right' || (ev.hand === 'bilateral' && hi === 0);
           const fIdx = segLabels.findIndex(l => isRight ? /right.*(forearm|lowerarm|wrist)/i.test(l) : /left.*(forearm|lowerarm|wrist)/i.test(l));
           if (fIdx >= 0 && pts[fIdx]) {
             const [fx, fy] = pts[fIdx];
@@ -180,10 +127,10 @@ export default function SkeletonViewer({
         <g key="force-readout">
           <rect x={W - 95} y={H - 42} width={88} height={36} rx={5} fill={C.bg} fillOpacity={0.85} stroke={C.border} strokeWidth={0.5}/>
           <text x={W - 90} y={H - 25} fill={rVal > 0 ? "#fbbf24" : C.muted} fontSize={rVal > 0 ? 12 : 9} fontWeight={rVal > 0 ? "700" : "400"} fontFamily="monospace">
-            {rVal > 0 ? `R ${rVal.toFixed(0)} N` : "R  \u2014"}
+            {rVal > 0 ? `R ${rVal.toFixed(0)} N` : "R  —"}
           </text>
           <text x={W - 90} y={H - 10} fill={lVal > 0 ? "#4ade80" : C.muted} fontSize={lVal > 0 ? 12 : 9} fontWeight={lVal > 0 ? "700" : "400"} fontFamily="monospace">
-            {lVal > 0 ? `L ${lVal.toFixed(0)} N` : "L  \u2014"}
+            {lVal > 0 ? `L ${lVal.toFixed(0)} N` : "L  —"}
           </text>
         </g>
       );
@@ -218,16 +165,6 @@ export default function SkeletonViewer({
             stroke={isR ? C.sky : isL ? C.rose : C.amber} strokeWidth={isR || isL ? 3 : 4} strokeLinecap="round"/>;
         })}
 
-        {/* Hand→Fingertip extension lines */}
-        {rHandIdx >= 0 && rFingertip && pts[rHandIdx] && (
-          <line x1={pts[rHandIdx][0]} y1={pts[rHandIdx][1]} x2={rFingertip[0]} y2={rFingertip[1]}
-            stroke={C.sky} strokeWidth={2} strokeLinecap="round" strokeDasharray="3 2"/>
-        )}
-        {lHandIdx >= 0 && lFingertip && pts[lHandIdx] && (
-          <line x1={pts[lHandIdx][0]} y1={pts[lHandIdx][1]} x2={lFingertip[0]} y2={lFingertip[1]}
-            stroke={C.rose} strokeWidth={2} strokeLinecap="round" strokeDasharray="3 2"/>
-        )}
-
         {/* Joint dots */}
         {pts.map((pt, i) => {
           if (!pt) return null;
@@ -236,24 +173,20 @@ export default function SkeletonViewer({
             fill={/head/i.test(lbl) ? C.amber : C.accent} opacity={0.9}/>;
         })}
 
-        {/* Fingertip dots */}
-        {rFingertip && <circle cx={rFingertip[0]} cy={rFingertip[1]} r={3} fill={C.sky} opacity={0.8}/>}
-        {lFingertip && <circle cx={lFingertip[0]} cy={lFingertip[1]} r={3} fill={C.rose} opacity={0.8}/>}
-
         {/* Force arrows */}
         {renderForceArrows()}
 
-        {!hasData && <text x={W / 2} y={H - 16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose \u2014 upload MVNX</text>}
+        {!hasData && <text x={W / 2} y={H - 16} textAnchor="middle" fill={C.muted} fontSize={11}>Reference pose — upload MVNX</text>}
       </svg>
 
       {hasData ? (
         <div style={{marginTop: 10}}>
           <div style={{display: "flex", gap: 5, justifyContent: "center", marginBottom: 6, flexWrap: "wrap"}}>
-            <Btn small onClick={() => { setSkelFrame(0); setSkelPlaying(false); }}>{"\u23EE"}</Btn>
-            <Btn small active={skelPlaying} onClick={() => setSkelPlaying(p => !p)}>{skelPlaying ? "\u23F8" : "\u25B6"}</Btn>
-            <Btn small onClick={() => { setSkelPlaying(false); setSkelFrame(mvnx.frames.length - 1); }}>{"\u23ED"}</Btn>
+            <Btn small onClick={() => { setSkelFrame(0); setSkelPlaying(false); }}>⏮</Btn>
+            <Btn small active={skelPlaying} onClick={() => setSkelPlaying(p => !p)}>{skelPlaying ? "⏸" : "▶"}</Btn>
+            <Btn small onClick={() => { setSkelPlaying(false); setSkelFrame(mvnx.frames.length - 1); }}>⏭</Btn>
             {[0.25, 0.5, 1, 2, 4].map(s => (
-              <Btn key={s} small active={skelSpeed === s} onClick={() => setSkelSpeed(s)}>{s}\u00D7</Btn>
+              <Btn key={s} small active={skelSpeed === s} onClick={() => setSkelSpeed(s)}>{s}×</Btn>
             ))}
           </div>
           <input type="range" min={0} max={mvnx.frames.length - 1} value={skelFrame}
@@ -286,7 +219,7 @@ export default function SkeletonViewer({
         <div style={{marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 10}}>
           <Btn active={showForcePanel} onClick={() => setShowForcePanel(p => !p)}
             style={{width: "100%", justifyContent: "center", textAlign: "center"}}>
-            {showForcePanel ? "\u2715 Close Force Panel" : "\u26A1 Force Events"}
+            {showForcePanel ? "✕ Close Force Panel" : "⚡ Force Events"}
           </Btn>
         </div>
       )}

@@ -34,14 +34,14 @@ export default function LoginScreen() {
     <div style={{background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI',system-ui,sans-serif"}}>
       <div style={{width: "100%", maxWidth: 400, padding: 16}}>
         <div style={{textAlign: "center", marginBottom: 32}}>
-          <div style={{fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: 3, marginBottom: 6}}>OBEL \u00B7 UWaterloo</div>
+          <div style={{fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: 3, marginBottom: 6}}>OBEL · UWaterloo</div>
           <div style={{fontSize: 24, fontWeight: 700, color: C.text, marginBottom: 6}}>Biomechanics Dashboard</div>
-          <div style={{fontSize: 13, color: C.muted}}>MVNX \u00B7 CSV \u00B7 LoadSOL \u00B7 WiDACS \u00B7 Cycle Analysis</div>
+          <div style={{fontSize: 13, color: C.muted}}>MVNX · CSV · LoadSOL · WiDACS · Cycle Analysis</div>
         </div>
         <div style={{background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 28}}>
           {done ? (
             <div style={{textAlign: "center", color: C.accent}}>
-              <div style={{fontSize: 30, marginBottom: 12}}>{"\u2713"}</div>
+              <div style={{fontSize: 30, marginBottom: 12}}>✓</div>
               <div style={{fontSize: 14, fontWeight: 600, marginBottom: 8}}>Check your email</div>
               <div style={{fontSize: 12, color: C.muted}}>A confirmation link has been sent to {email}.</div>
               <div style={{marginTop: 18}}><Btn active onClick={() => { setMode("login"); setDone(false); }}>Back to Sign In</Btn></div>
