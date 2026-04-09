@@ -7,7 +7,7 @@ import { create } from 'zustand';
 const useBiomechanicsStore = create((set, get) => ({
   // ── Jobs ──
   jobs: [],
-  activeJobId: localStorage.getItem('bmech_activeJob') || null,
+  activeJobId: (typeof localStorage !== 'undefined' && localStorage.getItem('bmech_activeJob')) || null,
   jobsLoading: true,
   filesLoading: false,
   loadingMsg: "",
@@ -18,8 +18,7 @@ const useBiomechanicsStore = create((set, get) => ({
     jobs: state.jobs.map(j => j.id === jobId ? (typeof updater === 'function' ? updater(j) : { ...j, ...updater }) : j),
   })),
   setActiveJobId: (id) => {
-    if (id) localStorage.setItem('bmech_activeJob', id);
-    else localStorage.removeItem('bmech_activeJob');
+    try { if (id) localStorage.setItem('bmech_activeJob', id); else localStorage.removeItem('bmech_activeJob'); } catch {}
     set({ activeJobId: id });
   },
   setJobsLoading: (v) => set({ jobsLoading: v }),
