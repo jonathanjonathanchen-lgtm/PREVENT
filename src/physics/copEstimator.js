@@ -1,103 +1,93 @@
-// ── Center of Pressure (CoP) Heuristic Estimation ───────────────────────────
-// LoadSOL provides normal GRF but lacks 2D CoP.
-// This module estimates CoP dynamically based on the foot segment's pitch angle
-// relative to the global floor plane.
+// ── Centre of Pressure (CoP) — Davidson et al. (2025) Weighted Algorithm ─────
+// Estimates 2D CoP from 3-compartment LoadSOL insole forces.
 //
-// Biomechanical rationale:
-// - During heel-strike / dorsiflexion (negative pitch), CoP shifts posteriorly toward heel
-// - During toe-off / plantarflexion (positive pitch), CoP shifts anteriorly toward toes
-// - During flat-foot midstance, CoP is approximately at geometric center
+// Eq 1 (A-P): CoP_AP = P_T·F_T/(F_T+F_H+ε) + P_H·F_H/(F_T+F_H+ε)
+// Eq 2 (M-L): CoP_ML = P_M·F_M/(F_M+F_L+ε) + P_L·F_L/(F_M+F_L+ε)
 //
-// Algorithm:
-// 1. Extract foot segment pitch (rotation about mediolateral axis) from segment orientation
-// 2. Map pitch angle to CoP fraction along foot length:
-//    - Neutral (0°): CoP at 50% foot length
-//    - Full dorsiflexion (~-20°): CoP at ~20% (near heel)
-//    - Full plantarflexion (~+30°): CoP at ~85% (near toes)
-// 3. Linear interpolation between these anchors
+// Where: F_T = F_M + F_L (forefoot total), F_H = heel, ε = 5 N
+// Boundary positions clamped to 20–80% of foot length (A-P) and foot width (M-L).
+//
+// Falls back to toe-position when 3-compartment data is not available.
 
-import { vget, vadd, vscale, vsub, getQuat, quatToRotMatrix } from './vectorUtils.js';
+import { vget, vadd, vscale, vsub, vnorm, vmag } from './vectorUtils.js';
 
-/**
- * Extract pitch angle (sagittal plane rotation) from a quaternion orientation.
- * Pitch = rotation about local X axis (mediolateral) in XSENS Z-up frame.
- *
- * @param {number[]} quat - [w,x,y,z] quaternion
- * @returns {number} - Pitch angle in degrees (positive = plantarflexion)
- */
-function extractPitch(quat) {
-  const [w, x, y, z] = quat;
-  // Euler angle extraction for ZXY order (XSENS convention)
-  // Pitch (rotation about X axis) = asin(2*(w*x + y*z))
-  const sinPitch = 2 * (w * x + y * z);
-  const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
-  return pitch * (180 / Math.PI);
-}
+const EPS = 5; // N — prevents division by zero when foot is unloaded
+
+// Boundary fractions (Davidson et al. — clamped 20–80%)
+const P_T = 0.80; // toe boundary: 80% of foot length from heel
+const P_H = 0.20; // heel boundary: 20% of foot length from heel
+const P_M = 0.80; // medial boundary: 80% of foot width from lateral edge
+const P_L = 0.20; // lateral boundary: 20% of foot width from lateral edge
+
+// Typical adult foot width ≈ 38% of foot length (used when M-L can't be measured)
+const FOOT_WIDTH_RATIO = 0.38;
 
 /**
- * Map foot pitch angle to CoP fraction along foot length.
- * Returns a value in [0, 1] where 0 = heel, 1 = toe tip.
- *
- * @param {number} pitchDeg - Foot pitch in degrees
- * @returns {number} - CoP fraction (0=heel, 1=toe)
- */
-function pitchToCoP(pitchDeg) {
-  // Piecewise linear mapping:
-  // -20° (dorsiflexion) → 0.20 (near heel)
-  //   0° (neutral)      → 0.50 (midfoot)
-  // +30° (plantarflexion) → 0.85 (near toe)
-
-  if (pitchDeg <= -20) return 0.20;
-  if (pitchDeg >= 30) return 0.85;
-
-  if (pitchDeg <= 0) {
-    // Dorsiflexion region: -20° → 0°  maps to  0.20 → 0.50
-    const t = (pitchDeg + 20) / 20; // 0 to 1
-    return 0.20 + t * 0.30;
-  } else {
-    // Plantarflexion region: 0° → 30°  maps to  0.50 → 0.85
-    const t = pitchDeg / 30; // 0 to 1
-    return 0.50 + t * 0.35;
-  }
-}
-
-/**
- * Estimate 3D CoP position for a foot given its segment data.
+ * Estimate 3D CoP position using Davidson et al. (2025) weighted algorithm.
  *
  * @param {string} side - 'Right' or 'Left'
- * @param {object} frame - Frame with pos and orient arrays
+ * @param {object} frame - Kinematic frame with pos array (XSENS segment positions)
  * @param {object} segIndex - Segment label → index map
- * @returns {{ cop: number[], fraction: number }} - 3D CoP position and fraction
+ * @param {object|null} comp - { heel, medial, lateral } forces in N, or null
+ * @returns {{ cop: number[], apFrac: number }} - 3D CoP position and A-P fraction
  */
-export function estimateCoP(side, frame, segIndex) {
-  const footLabel = `${side}Foot`;
-  const toeLabel  = `${side}Toe`;
+export function estimateCoP(side, frame, segIndex, comp) {
+  const footIdx = segIndex[`${side}Foot`];
+  const toeIdx  = segIndex[`${side}Toe`];
 
-  const footIdx = segIndex[footLabel];
-  const toeIdx  = segIndex[toeLabel];
-
+  // Fallback: toe position if no foot segment
   if (footIdx == null) {
-    // Fallback: just use toe position if available
     const toePos = toeIdx != null ? vget(frame.pos, toeIdx) : [0, 0, 0];
-    return { cop: toePos, fraction: 1.0 };
+    return { cop: toePos, apFrac: 1.0 };
   }
 
   const r_heel = vget(frame.pos, footIdx);  // foot segment origin ≈ ankle/heel
-  const r_toe  = toeIdx != null ? vget(frame.pos, toeIdx) : vadd(r_heel, [0.2, 0, 0]);
+  const r_toe  = toeIdx != null ? vget(frame.pos, toeIdx) : vadd(r_heel, [0.25, 0, 0]);
 
-  // Get foot orientation and extract pitch
-  let fraction = 0.50; // default midfoot
-  if (frame.orient?.length > footIdx * 4 + 3) {
-    const quat = getQuat(frame.orient, footIdx);
-    const pitch = extractPitch(quat);
-    fraction = pitchToCoP(pitch);
+  // No compartment data → fall back to toe position (original method)
+  if (!comp) {
+    return { cop: r_toe, apFrac: 1.0 };
   }
 
-  // CoP = heel + fraction * (toe - heel), projected onto the floor (z=0 for global)
-  const cop3d = vadd(r_heel, vscale(vsub(r_toe, r_heel), fraction));
-  // Keep the vertical component at floor level (z ≈ min of heel/toe z, or 0)
-  const floorZ = Math.min(r_heel[2], r_toe[2]);
-  cop3d[2] = floorZ;
+  const { heel: F_H, medial: F_M, lateral: F_L } = comp;
+  const F_T = F_M + F_L; // forefoot total
 
-  return { cop: cop3d, fraction };
+  // ── A-P CoP fraction (Eq 1) ──
+  const dAP = F_T + F_H + EPS;
+  const apFrac = (P_T * F_T + P_H * F_H) / dAP;
+
+  // ── M-L CoP fraction (Eq 2) ──
+  const dML = F_M + F_L + EPS;
+  const mlFrac = (P_M * F_M + P_L * F_L) / dML;
+
+  // ── Map fractions to 3D world coordinates ──
+  // A-P axis: heel → toe direction
+  const footVec = vsub(r_toe, r_heel);
+  const footLen = vmag(footVec);
+  const apDir = footLen > 0.01 ? vnorm(footVec) : [1, 0, 0];
+
+  // M-L axis: perpendicular to A-P in the floor plane (Z-up)
+  // cross([0,0,1], apDir) gives a vector pointing left in world frame
+  let mlDir = [-apDir[1], apDir[0], 0];
+  const mlMag = vmag(mlDir);
+  mlDir = mlMag > 0.01 ? vscale(mlDir, 1 / mlMag) : [0, 1, 0];
+
+  // mlDir points left (+Y). For right foot: medial = left (+Y), lateral = right (-Y).
+  // For left foot: medial = right (-Y), lateral = left (+Y).
+  // mlFrac goes from lateral (P_L=0.20) toward medial (P_M=0.80).
+  // Offset from center (0.5) → positive = medial direction.
+  const footWidth = footLen * FOOT_WIDTH_RATIO;
+  const mlSign = side === 'Right' ? 1 : -1;
+  const mlOffset = (mlFrac - 0.5) * footWidth * mlSign;
+
+  // 3D CoP = heel + apFrac * footVec + mlOffset * mlDir
+  const cop = vadd(
+    vadd(r_heel, vscale(apDir, apFrac * footLen)),
+    vscale(mlDir, mlOffset)
+  );
+
+  // Keep Z at floor level
+  cop[2] = Math.min(r_heel[2], r_toe[2]);
+
+  return { cop, apFrac };
 }

@@ -16,14 +16,33 @@ export function parseLoadSOL(text) {
       const left  = Math.abs(parseFloat(cols[4])  || 0);
       const right = Math.abs(parseFloat(cols[9])  || 0);
       const trig  = Math.max(Math.abs(parseFloat(cols[11]) || 0), Math.abs(parseFloat(cols[12]) || 0));
-      if (!isNaN(time)) data.push({ time, left, right, total: left+right, trig });
+      const row = { time, left, right, total: left+right, trig };
+
+      // 3-compartment forces for CoP estimation (Davidson et al. 2025)
+      // LoadSOL 3-sensor layout: cols 1-3 = left (heel, medial, lateral), cols 6-8 = right
+      if (cols.length >= 10) {
+        const lH = Math.abs(parseFloat(cols[1]) || 0);
+        const lM = Math.abs(parseFloat(cols[2]) || 0);
+        const lL = Math.abs(parseFloat(cols[3]) || 0);
+        const rH = Math.abs(parseFloat(cols[6]) || 0);
+        const rM = Math.abs(parseFloat(cols[7]) || 0);
+        const rL = Math.abs(parseFloat(cols[8]) || 0);
+        // Validate: at least one compartment set has non-zero data
+        if (lH + lM + lL > 0 || rH + rM + rL > 0) {
+          row.leftHeel = lH;  row.leftMedial = lM;  row.leftLateral = lL;
+          row.rightHeel = rH; row.rightMedial = rM; row.rightLateral = rL;
+        }
+      }
+
+      if (!isNaN(time)) data.push(row);
     }
     let blipTime = null;
     const firstBlip = data.find(d => d.trig > 5);
     if (firstBlip) blipTime = firstBlip.time;
     const leftMax  = data.length ? Math.max(...data.map(d => d.left))  : 0;
     const rightMax = data.length ? Math.max(...data.map(d => d.right)) : 0;
-    return { ok:true, data, blipTime, stats:{ leftMax, rightMax } };
+    const has3Comp = data.length > 0 && data[0].leftHeel != null;
+    return { ok:true, data, blipTime, stats:{ leftMax, rightMax, has3Comp } };
   } catch(e) { return { ok:false, error:e.message }; }
 }
 

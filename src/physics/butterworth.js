@@ -155,3 +155,66 @@ export function butterworth3DAccel(positionsPerFrame, fs, fc = 6) {
 
   return ax.map((_, i) => [ax[i], ay[i], az[i]]);
 }
+
+/**
+ * Filter all segment positions in kinematic data with Butterworth LPF.
+ * Returns a new kinData object with smoothed positions (and joint angles if present).
+ * The original kinData is not mutated.
+ *
+ * @param {object} kinData - UnifiedKinematicData with frames, segLabels, frameRate, etc.
+ * @param {number} fc - Cutoff frequency (Hz), default 6
+ * @returns {object} - New kinData with filtered pos arrays
+ */
+export function filterKinPositions(kinData, fc = 6) {
+  if (!kinData?.frames?.length || kinData.frames.length < 12) return kinData;
+
+  const nf = kinData.frames.length;
+  const fs = kinData.frameRate || 60;
+  const nSeg = kinData.segLabels?.length || 0;
+  if (nSeg === 0) return kinData;
+
+  // Extract and filter each segment's X, Y, Z position across all frames
+  const filteredPos = new Array(nf);
+  for (let i = 0; i < nf; i++) filteredPos[i] = new Float64Array(nSeg * 3);
+
+  for (let s = 0; s < nSeg; s++) {
+    for (let axis = 0; axis < 3; axis++) {
+      const col = s * 3 + axis;
+      const signal = new Array(nf);
+      for (let fi = 0; fi < nf; fi++) {
+        signal[fi] = kinData.frames[fi].pos?.[col] ?? 0;
+      }
+      const filtered = filtfiltButterworth4(signal, fc, fs);
+      for (let fi = 0; fi < nf; fi++) {
+        filteredPos[fi][col] = filtered[fi];
+      }
+    }
+  }
+
+  // Also filter joint angles if present
+  const nJA = kinData.frames[0]?.ja?.length || 0;
+  let filteredJA = null;
+  if (nJA > 0) {
+    filteredJA = new Array(nf);
+    for (let i = 0; i < nf; i++) filteredJA[i] = new Float64Array(nJA);
+    for (let col = 0; col < nJA; col++) {
+      const signal = new Array(nf);
+      for (let fi = 0; fi < nf; fi++) {
+        signal[fi] = kinData.frames[fi].ja?.[col] ?? 0;
+      }
+      const filtered = filtfiltButterworth4(signal, fc, fs);
+      for (let fi = 0; fi < nf; fi++) {
+        filteredJA[fi][col] = filtered[fi];
+      }
+    }
+  }
+
+  // Build new frames with filtered data, preserving all other fields
+  const newFrames = kinData.frames.map((f, fi) => ({
+    ...f,
+    pos: Array.from(filteredPos[fi]),
+    ...(filteredJA ? { ja: Array.from(filteredJA[fi]) } : {}),
+  }));
+
+  return { ...kinData, frames: newFrames };
+}

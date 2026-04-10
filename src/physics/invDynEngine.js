@@ -8,6 +8,7 @@
 import { vadd, vsub, vscale, vneg, vcross, vmag, vnorm, vget } from './vectorUtils.js';
 import { WINTER, SEG_DISTAL } from './winterParams.js';
 import { butterworth3DAccel } from './butterworth.js';
+import { estimateCoP } from './copEstimator.js';
 import { DIRS } from '../utils/constants.js';
 
 /**
@@ -82,10 +83,24 @@ export function computeInvDyn(kinData, bodyMass, lsfData, forceEventsList, optio
     return d0[vKey] + frac*(d1[vKey]-d0[vKey]);
   };
 
-  const interpGRF = (t) => ({
-    right: Math.max(0, interp(lsfData, t, 'time', 'right')),
-    left:  Math.max(0, interp(lsfData, t, 'time', 'left')),
-  });
+  const has3Comp = lsfData?.[0]?.leftHeel != null;
+
+  const interpGRF = (t) => {
+    const right = Math.max(0, interp(lsfData, t, 'time', 'right'));
+    const left  = Math.max(0, interp(lsfData, t, 'time', 'left'));
+    // 3-compartment forces for Davidson CoP estimation
+    const rightComp = has3Comp ? {
+      heel:    Math.max(0, interp(lsfData, t, 'time', 'rightHeel')),
+      medial:  Math.max(0, interp(lsfData, t, 'time', 'rightMedial')),
+      lateral: Math.max(0, interp(lsfData, t, 'time', 'rightLateral')),
+    } : null;
+    const leftComp = has3Comp ? {
+      heel:    Math.max(0, interp(lsfData, t, 'time', 'leftHeel')),
+      medial:  Math.max(0, interp(lsfData, t, 'time', 'leftMedial')),
+      lateral: Math.max(0, interp(lsfData, t, 'time', 'leftLateral')),
+    } : null;
+    return { right, left, rightComp, leftComp };
+  };
 
   const interpEvForce = (ev, t) => {
     const localT = t - (ev.tStart || 0);
@@ -131,12 +146,13 @@ export function computeInvDyn(kinData, bodyMass, lsfData, forceEventsList, optio
     const t   = frame.time;
     const grf = interpGRF(t);
 
-    // ── Legs (bottom-up) — GRF at toe position (original method) ──
+    // ── Legs (bottom-up) — GRF at estimated CoP (Davidson et al. 2025) or toe ──
     const leg = (side) => {
       const UL=`${side}UpperLeg`, LL=`${side}LowerLeg`, FT=`${side}Foot`, TOE=`${side}Toe`;
       const grfVal = side==='Right' ? grf.right : grf.left;
-      const r_toe  = vget(frame.pos, si[TOE] ?? si[FT]);
-      const foot   = solve(FT,  [0,0,grfVal], [0,0,0],   r_toe,        frame, fi);
+      const comp   = side==='Right' ? grf.rightComp : grf.leftComp;
+      const { cop: r_grf } = estimateCoP(side, frame, si, comp);
+      const foot   = solve(FT,  [0,0,grfVal], [0,0,0],   r_grf,        frame, fi);
       const shank  = solve(LL,  vneg(foot.F), vneg(foot.M), foot.r_prox, frame, fi);
       const thigh  = solve(UL,  vneg(shank.F),vneg(shank.M),shank.r_prox,frame, fi);
       return { foot, shank, thigh };
@@ -170,7 +186,7 @@ export function computeInvDyn(kinData, bodyMass, lsfData, forceEventsList, optio
       vadd(M_hR, M_hL));
     const M_L5S1 = vsub(tau_p_inertial, tau_p);
 
-    // ── Arms (top-down) — forearm direction for force application (original method) ──
+    // ── Arms (top-down) — force at hand CoM (Winter 2009) ──
     const armSolve = (cap) => {
       const sideLower = cap.toLowerCase();
       const hand = `${cap}Hand`, fore = `${cap}ForeArm`, upper = `${cap}UpperArm`;
@@ -178,7 +194,10 @@ export function computeInvDyn(kinData, bodyMass, lsfData, forceEventsList, optio
       const r_wrist = vget(frame.pos, si[hand]);
       const r_elbow = vget(frame.pos, si[fore] ?? si[upper]);
       const handDir = vnorm(vsub(r_wrist, r_elbow));
-      const r_app   = vadd(r_wrist, vscale(handDir, 0.10));
+      // Force applied at hand CoM: 50.6% of hand length from wrist (Winter 2009)
+      const hLen = segLen[hand] || 0.10;
+      const [, hCf] = WINTER[hand] || [0.006, 0.506];
+      const r_app = vadd(r_wrist, vscale(handDir, hLen * hCf));
       let F_app = [0,0,0];
       for (const ev of (forceEventsList || [])) {
         const isBilateral = ev.hand === 'bilateral';

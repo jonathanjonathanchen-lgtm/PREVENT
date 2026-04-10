@@ -6,15 +6,41 @@ import { C, BONES, REF_POS, DIR_SVG } from '../utils/constants.js';
 import { Btn } from './ui/index.js';
 import useBiomechanicsStore from '../store/useBiomechanicsStore.js';
 
+// Hand length (wrist → palm center, meters) for projected palm endpoint
+const HAND_LEN = 0.10;
+
 // Skeleton projection (XSENS Z-up)
-function projectPos(flatPos, view, W, H) {
-  const pts = [];
+// Appends two virtual palm-tip points (indices nSeg, nSeg+1) for R/L hands
+function projectPos(flatPos, view, W, H, segLabels) {
+  const pts3d = [];
   for (let i = 0; i + 2 < flatPos.length; i += 3) {
-    const [x, y, z] = [flatPos[i], flatPos[i+1], flatPos[i+2]];
-    if (view === "front") pts.push([y, z]);
-    else if (view === "side") pts.push([x, z]);
-    else pts.push([y, x]);
+    pts3d.push([flatPos[i], flatPos[i+1], flatPos[i+2]]);
   }
+
+  // Project palm endpoints from forearm→hand direction
+  const rFore = segLabels?.findIndex(l => /rightforearm/i.test(l));
+  const rHand = segLabels?.findIndex(l => /righthand/i.test(l));
+  const lFore = segLabels?.findIndex(l => /leftforearm/i.test(l));
+  const lHand = segLabels?.findIndex(l => /lefthand/i.test(l));
+
+  const palmTip = (foreIdx, handIdx) => {
+    if (foreIdx >= 0 && handIdx >= 0 && pts3d[foreIdx] && pts3d[handIdx]) {
+      const f = pts3d[foreIdx], h = pts3d[handIdx];
+      const dx = h[0]-f[0], dy = h[1]-f[1], dz = h[2]-f[2];
+      const m = Math.sqrt(dx*dx+dy*dy+dz*dz) || 1;
+      return [h[0]+dx/m*HAND_LEN, h[1]+dy/m*HAND_LEN, h[2]+dz/m*HAND_LEN];
+    }
+    return handIdx >= 0 && pts3d[handIdx] ? pts3d[handIdx] : [0,0,0];
+  };
+  pts3d.push(palmTip(rFore, rHand)); // virtual index = nSeg
+  pts3d.push(palmTip(lFore, lHand)); // virtual index = nSeg+1
+
+  // 2D projection
+  const pts = pts3d.map(([x, y, z]) => {
+    if (view === "front") return [y, z];
+    if (view === "side") return [x, z];
+    return [y, x];
+  });
   if (!pts.length) return [];
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
   const [mnX, mxX] = [Math.min(...xs), Math.max(...xs)];
@@ -35,24 +61,31 @@ export default function SkeletonViewer({
     skelPlaying, setSkelPlaying, skelSpeed, setSkelSpeed,
     showForcePanel, setShowForcePanel,
     useRigidBody, setUseRigidBody,
+    butterworthCutoff, setButterworthCutoff,
   } = useBiomechanicsStore();
 
   const hasData = !!mvnx?.frames?.length;
   const frame = hasData ? mvnx.frames[Math.min(skelFrame, mvnx.frames.length - 1)] : null;
   const positions = frame?.pos?.length ? frame.pos : REF_POS;
   const boneList = mvnx?.bones?.length ? mvnx.bones : BONES;
-  const W = 300, H = 300;
-  const pts = projectPos(positions, skelView, W, H);
-  const ft = frame?.time || 0;
+  const W = 270, H = 270;
   const segLabels = mvnx?.segLabels || [];
+  const nSeg = Math.floor(positions.length / 3);
+  const pts = projectPos(positions, skelView, W, H, segLabels);
+  const ft = frame?.time || 0;
+  // Virtual palm-tip indices appended by projectPos
+  const rPalmIdx = nSeg, lPalmIdx = nSeg + 1;
+  const rHandIdx = segLabels.findIndex(l => /righthand/i.test(l));
+  const lHandIdx = segLabels.findIndex(l => /lefthand/i.test(l));
 
   // Force arrows — matches original logic exactly
   const renderForceArrows = () => {
     if (!curEvs.length) return null;
     const arrows = [];
     const handForces = { right: 0, left: 0 };
-    const rHi = segLabels.findIndex(l => /right.*hand|hand.*right/i.test(l));
-    const lHi = segLabels.findIndex(l => /left.*hand|hand.*left/i.test(l));
+    // Force arrows originate from projected palm tips (not wrist)
+    const rHi = rPalmIdx;
+    const lHi = lPalmIdx;
 
     curEvs.forEach(ev => {
       if (!ev.fileIndices?.length) return;
@@ -148,7 +181,7 @@ export default function SkeletonViewer({
         ))}
       </div>
 
-      <svg width={W} height={H} style={{display: "block", margin: "0 auto"}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{display: "block", margin: "0 auto", width: "100%", maxWidth: W}}>
         <rect width={W} height={H} fill={C.bg} rx={8} stroke={C.border} strokeWidth={1}/>
         {[0.25, 0.5, 0.75].map(p => (
           <line key={p} x1={0} y1={H * p} x2={W} y2={H * p} stroke={C.border} strokeWidth={0.5} strokeDasharray="4 4"/>
@@ -165,6 +198,16 @@ export default function SkeletonViewer({
             stroke={isR ? C.sky : isL ? C.rose : C.amber} strokeWidth={isR || isL ? 3 : 4} strokeLinecap="round"/>;
         })}
 
+        {/* Palm bones (hand → projected palm tip) */}
+        {rHandIdx >= 0 && pts[rHandIdx] && pts[rPalmIdx] && (
+          <line x1={pts[rHandIdx][0]} y1={pts[rHandIdx][1]} x2={pts[rPalmIdx][0]} y2={pts[rPalmIdx][1]}
+            stroke={C.sky} strokeWidth={2.5} strokeLinecap="round" strokeDasharray="4 2"/>
+        )}
+        {lHandIdx >= 0 && pts[lHandIdx] && pts[lPalmIdx] && (
+          <line x1={pts[lHandIdx][0]} y1={pts[lHandIdx][1]} x2={pts[lPalmIdx][0]} y2={pts[lPalmIdx][1]}
+            stroke={C.rose} strokeWidth={2.5} strokeLinecap="round" strokeDasharray="4 2"/>
+        )}
+
         {/* Joint dots */}
         {pts.map((pt, i) => {
           if (!pt) return null;
@@ -172,6 +215,10 @@ export default function SkeletonViewer({
           return <circle key={i} cx={pt[0]} cy={pt[1]} r={/head/i.test(lbl) ? 7 : 4}
             fill={/head/i.test(lbl) ? C.amber : C.accent} opacity={0.9}/>;
         })}
+
+        {/* Palm tip dots */}
+        {pts[rPalmIdx] && rHandIdx >= 0 && <circle cx={pts[rPalmIdx][0]} cy={pts[rPalmIdx][1]} r={3} fill={C.sky} opacity={0.7}/>}
+        {pts[lPalmIdx] && lHandIdx >= 0 && <circle cx={pts[lPalmIdx][0]} cy={pts[lPalmIdx][1]} r={3} fill={C.rose} opacity={0.7}/>}
 
         {/* Force arrows */}
         {renderForceArrows()}
@@ -199,19 +246,30 @@ export default function SkeletonViewer({
         </div>
       ) : (
         <div style={{textAlign: "center", marginTop: 14}}>
-          <Btn active onClick={() => openUpload("mvnx")}>Upload MVNX / CSV</Btn>
+          <Btn active onClick={() => openUpload("mvnx")}>Upload MVNX</Btn>
         </div>
       )}
 
       {/* Butterworth / RigidBody toggle */}
       {hasData && (
-        <div style={{marginTop: 8, display: "flex", gap: 6, justifyContent: "center"}}>
-          <Btn small active={useRigidBody} onClick={() => setUseRigidBody(true)}>
-            XSENS Pre-Filtered
-          </Btn>
-          <Btn small active={!useRigidBody} onClick={() => setUseRigidBody(false)}>
-            Butterworth LPF
-          </Btn>
+        <div style={{marginTop: 8}}>
+          <div style={{display: "flex", gap: 6, justifyContent: "center"}}>
+            <Btn small active={useRigidBody} onClick={() => setUseRigidBody(true)}>
+              XSENS Raw
+            </Btn>
+            <Btn small active={!useRigidBody} onClick={() => setUseRigidBody(false)}>
+              Butterworth LPF
+            </Btn>
+          </div>
+          {!useRigidBody && (
+            <div style={{display: "flex", alignItems: "center", gap: 8, justifyContent: "center", marginTop: 6}}>
+              <span style={{fontSize: 10, color: C.muted}}>Cutoff</span>
+              <input type="range" min={2} max={15} step={1} value={butterworthCutoff}
+                onChange={e => setButterworthCutoff(+e.target.value)}
+                style={{width: 80, accentColor: C.accent}}/>
+              <span style={{fontSize: 10, color: C.accent, fontWeight: 600, minWidth: 30}}>{butterworthCutoff} Hz</span>
+            </div>
+          )}
         </div>
       )}
 

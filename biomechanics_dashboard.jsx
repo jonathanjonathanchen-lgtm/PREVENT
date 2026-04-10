@@ -15,9 +15,9 @@ import { supabase } from "./src/utils/supabase.js";
 import { blobToText, parseLoadSOL, parseForceFile } from "./src/utils/parsers.js";
 import { computeAveraged, normalizeForceTime } from "./src/utils/forceUtils.js";
 import { parseMVNX } from "./src/adapters/mvnxAdapter.js";
-import { parseXSENSCSVs } from "./src/adapters/csvAdapter.js";
 import { getJointAngles } from "./src/adapters/unifiedKinematicData.js";
 import { computeInvDyn } from "./src/physics/invDynEngine.js";
+import { filterKinPositions } from "./src/physics/butterworth.js";
 import { minMaxDecimate } from "./src/utils/decimation.js";
 import useBiomechanicsStore from "./src/store/useBiomechanicsStore.js";
 
@@ -148,9 +148,7 @@ function Dashboard({ session }) {
       for (const rec of mvnxRecs) {
         const text = await dl(`${rec.file_name} (${++done}/${total})`, rec.storage_path);
         if (!text) continue;
-        // Auto-detect format: MVNX XML vs CSV
-        const isXml = text.trimStart().startsWith('<') || text.trimStart().startsWith('<?xml');
-        const p = isXml ? parseMVNX(text) : parseXSENSCSVs([{ text, name: rec.file_name }]);
+        const p = parseMVNX(text);
         if (p.ok) mvnxFiles.push({ id: rec.id, storagePath: rec.storage_path, name: rec.file_name, ...p });
       }
 
@@ -233,7 +231,12 @@ function Dashboard({ session }) {
   }, [skelPlaying, activeJob, skelFileIdx, skelSpeed]);
 
   // ── Memoized data ──
-  const activeSkelMvnx = activeJob?.mvnxFiles?.[skelFileIdx];
+  const rawSkelMvnx = activeJob?.mvnxFiles?.[skelFileIdx];
+  // When Butterworth mode is active, filter positions + joint angles for display
+  const activeSkelMvnx = useMemo(() => {
+    if (useRigidBody || !rawSkelMvnx?.frames?.length) return rawSkelMvnx;
+    return filterKinPositions(rawSkelMvnx, butterworthCutoff);
+  }, [rawSkelMvnx, useRigidBody, butterworthCutoff]);
   const mvnxKey = activeSkelMvnx?.storagePath || '__default__';
   const curEvs = forceEvents[mvnxKey] || [];
   const setCurEvs = updater => setForceEvents(prev => ({
@@ -335,15 +338,11 @@ function Dashboard({ session }) {
 
     for (const file of files) {
       const text = await blobToText(file);
-      const effectiveType = uploadType === 'csv' ? 'mvnx' : uploadType; // CSV stored as mvnx type
-      const storagePath = `${activeJobId}/${effectiveType}/${Date.now()}_${file.name}`;
+      const storagePath = `${activeJobId}/${uploadType}/${Date.now()}_${file.name}`;
 
       let parsed;
       if (uploadType === "mvnx") {
-        const isXml = text.trimStart().startsWith('<') || text.trimStart().startsWith('<?xml');
-        parsed = isXml ? parseMVNX(text) : parseXSENSCSVs([{ text, name: file.name }]);
-      } else if (uploadType === "csv") {
-        parsed = parseXSENSCSVs([{ text, name: file.name }]);
+        parsed = parseMVNX(text);
       } else if (uploadType === "loadsol") {
         parsed = parseLoadSOL(text);
       } else {
@@ -354,7 +353,7 @@ function Dashboard({ session }) {
       const { error: upErr } = await supabase.storage.from(BUCKET).upload(storagePath, file);
       if (upErr) { alert(`Upload error: ${upErr.message}`); continue; }
 
-      const fileType = effectiveType === 'csv' ? 'mvnx' : effectiveType;
+      const fileType = uploadType;
       const sortOrder = fileType === "mvnx" ? (activeJob?.mvnxFiles?.length || 0)
         : fileType === "loadsol" ? (activeJob?.loadsolFiles?.length || 0)
         : (activeJob?.forceFiles?.length || 0);
@@ -436,7 +435,7 @@ function Dashboard({ session }) {
             <Stat label="Duration" value={mvnx?.duration?.toFixed(1) || "—"} unit="s"/>
             <Stat label="GRF Peak R" value={lsf?.stats?.rightMax?.toFixed(0) || "—"} unit="N"/>
             <Stat label="GRF Peak L" value={lsf?.stats?.leftMax?.toFixed(0) || "—"} unit="N"/>
-            <Stat label="Format" value={mvnx?.sourceFormat?.toUpperCase() || "—"} unit="" color={C.teal}/>
+            <Stat label="Frame Rate" value={mvnx?.frameRate || "—"} unit="Hz" color={C.teal}/>
             <Stat label="Force Events" value={curEvs?.length || "—"} unit=""/>
           </div>
         )}
@@ -446,7 +445,7 @@ function Dashboard({ session }) {
           <div style={{marginBottom: 10, background: C.bg, borderRadius: 7, border: `1px solid ${C.border}`, overflow: "hidden"}}>
             <div style={{display: "grid", gridTemplateColumns: "1fr 16px 1fr", alignItems: "center",
               padding: "5px 10px", borderBottom: `1px solid ${C.border}`, fontSize: 10, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: .5}}>
-              <span>MVNX/CSV Cycle</span><span/><span>LoadSOL</span>
+              <span>MVNX Cycle</span><span/><span>LoadSOL</span>
             </div>
             {mvnxFiles.map((f, i) => {
               const pairedIdx = loadsolPairings[i] ?? (loadsolFilesList.length === 1 ? 0 : null);
@@ -456,8 +455,7 @@ function Dashboard({ session }) {
                   display: "grid", gridTemplateColumns: "1fr 16px 1fr", alignItems: "center", padding: "6px 10px", cursor: "pointer",
                   background: isActive ? C.accent + "18" : "transparent", borderBottom: i < mvnxFiles.length - 1 ? `1px solid ${C.border}` : "none"}}>
                   <span style={{fontSize: 12, color: isActive ? C.accent : C.text, fontWeight: isActive ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>
-                    {f.name.replace(/\.mvnx\.mvnx$|\.mvnx$|\.csv$/i, "")}
-                    {f.sourceFormat === 'csv' && <span style={{fontSize: 9, color: C.amber, marginLeft: 4}}>CSV</span>}
+                    {f.name.replace(/\.mvnx\.mvnx$|\.mvnx$|\.gz$/i, "")}
                   </span>
                   <span style={{textAlign: "center", color: C.muted, fontSize: 11}}>→</span>
                   {loadsolFilesList.length > 0 ? (
@@ -620,8 +618,7 @@ function Dashboard({ session }) {
 
   const renderUploadModal = () => {
     const info = {
-      mvnx:    {icon: "🦴", title: "Upload MVNX Files", detail: "One .mvnx XML file per cycle trial", accept: ".mvnx", multi: true},
-      csv:     {icon: "📊", title: "Upload XSENS CSV", detail: "Standard XSENS .csv exports (position, acceleration, etc.)", accept: ".csv", multi: true},
+      mvnx:    {icon: "🦴", title: "Upload MVNX Files", detail: "One .mvnx file per cycle trial (supports .mvnx.gz compressed)", accept: ".mvnx,.gz", multi: true},
       loadsol: {icon: "👟", title: "Upload LoadSOL TXT", detail: "Tab-separated TXT export from LoadSOL", accept: ".txt", multi: true},
       force:   {icon: "📈", title: "Upload Force CSV", detail: "Time (col 1), Force (col 2). WiDACS CSV works directly.", accept: ".csv,.txt", multi: false},
     }[uploadType];
@@ -629,7 +626,7 @@ function Dashboard({ session }) {
       <Modal title="Upload Files" onClose={() => setShowUploadModal(false)}>
         <div style={{fontSize: 12, color: C.muted, marginBottom: 12}}>Job: <span style={{color: C.accent, fontWeight: 600}}>{activeJob?.name}</span></div>
         <div style={{display: "flex", gap: 6, marginBottom: 16}}>
-          {[["mvnx", "🦴 MVNX"], ["csv", "📊 CSV"], ["loadsol", "👟 LoadSOL"], ["force", "📈 Force"]].map(([k, lbl]) => (
+          {[["mvnx", "🦴 MVNX"], ["loadsol", "👟 LoadSOL"], ["force", "📈 Force"]].map(([k, lbl]) => (
             <Btn key={k} active={uploadType === k} onClick={() => setUploadType(k)}>{lbl}</Btn>
           ))}
         </div>
